@@ -42,10 +42,11 @@ The PostGIS integration test needs a dedicated test database. With Compose runni
 
 ```sh
 docker compose exec db psql -U iyosi -d postgres -c 'CREATE DATABASE iyosi_test;'
+docker compose exec db psql -U iyosi -d iyosi_test -c "CREATE TABLE iyosi_integration_test_guard (purpose text PRIMARY KEY); INSERT INTO iyosi_integration_test_guard VALUES ('iyosi dedicated integration tests');"
 docker compose exec -e TEST_DATABASE_URL=postgresql://iyosi:local-development-only@db:5432/iyosi_test workspace sh -c 'PYTHONPATH=. python -m pytest -q tests/test_integration.py'
 ```
 
-Set `TEST_DATABASE_URL` to an empty dedicated database only; that test truncates its tables. Re-generate OpenAPI with `PYTHONPATH=. python scripts/export_openapi.py`. Schedule `docker compose exec workspace python scripts/cleanup.py` daily to remove expired idempotency and rate-limit metadata. The local Compose stack has been started and `/health` verified on the development Mac; the database contains no published places until an administrator publishes reviewed submissions.
+Set `TEST_DATABASE_URL` to an empty dedicated database whose name ends in `_test` and create its marker before running the suite. The fixture checks both before it truncates tables. Re-generate OpenAPI with `PYTHONPATH=. python scripts/export_openapi.py`. Schedule `docker compose exec workspace python scripts/cleanup.py` daily to remove expired idempotency and rate-limit metadata. The local Compose stack has been started and `/health` verified on the development Mac; the database contains no published places until an administrator publishes reviewed submissions.
 
 ## Repositories and ownership
 
