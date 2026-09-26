@@ -12,6 +12,8 @@ Help adults find current, clearly labeled information about where smoking is per
 
 Read the [product brief](docs/PRODUCT_BRIEF.md) for the full story, experience, release scope, and naming ideas. The [Codex API handoff](docs/API_HANDOFF.md) links the conceptual architecture, v1 feature specification, and API resource model for the next development step. [Launch notes](docs/LAUNCH_NOTES.md) cover moderation, privacy, legal review, and future business options.
 
+The [backend implementation plan](docs/BACKEND_EXECUTIVE_PLAN.md), [sprint backlog](docs/BACKEND_SPRINT_PLAN.md), and [test map](docs/BACKEND_TEST_MAP.md) track the work from the current local API to a usable private pilot.
+
 ## Current state
 
 This repository contains the FastAPI v1 server, PostGIS migration, NCR boundary seed, generated [OpenAPI contract](docs/openapi.json), and contract/integration tests. The Android pilot client and SwiftUI iOS client live in separate repositories. The admin web UI is not yet implemented. The API is platform neutral.
