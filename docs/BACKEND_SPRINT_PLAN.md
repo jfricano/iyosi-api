@@ -106,4 +106,4 @@ The scrum role updates this plan after each sprint review with completed ticket 
 
 - B-001 publication and test-isolation changes are committed on `fix/B-001-create-publication` (`553b28b`). The local pilot database has migration 002 applied. The fixture rejects an unmarked database before truncation. The marked upgraded database runs the full suite with **11 passing tests**, and a fresh database passed both integration journeys.
 - B-002 evidence is recorded in [Backend test map](BACKEND_TEST_MAP.md). The checked-in OpenAPI comparison passes.
-- Both branches remain separate from `main` pending review/merge. B-003 is next: prepare development data, then source and review real pilot places before publishing them.
+- B-001 and B-002 were reviewed and merged into local `main` as separate commits; remote publication is still pending. B-003 is next: prepare development data, then source and review real pilot places before publishing them.
