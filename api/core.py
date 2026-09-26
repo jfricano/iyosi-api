@@ -1,0 +1,131 @@
+import base64
+import binascii
+import hashlib
+import hmac
+import json
+import os
+import secrets
+import time
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from typing import Any
+
+import psycopg
+from psycopg.rows import dict_row
+from fastapi import Depends, Header, HTTPException, Request
+
+DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://iyosi:local-development-only@localhost:5432/iyosi')
+SECRET = os.environ.get('IYOSI_SECRET', '')
+
+def uid(prefix: str) -> str:
+    return prefix + '_' + secrets.token_hex(12)
+
+@contextmanager
+def db():
+    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+        yield conn
+
+def fail(status: int, code: str, message: str):
+    raise HTTPException(status, detail={'code': code, 'message': message})
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
+def sign(account_id: str) -> str:
+    if len(SECRET) < 32:
+        raise RuntimeError('IYOSI_SECRET must contain at least 32 characters')
+    payload = base64.urlsafe_b64encode(json.dumps({'sub': account_id, 'exp': int(time.time()) + 86400}, separators=(',', ':')).encode()).decode().rstrip('=')
+    mac = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+    return payload + '.' + mac
+
+def account(authorization: str | None = Header(default=None)) -> dict:
+    if not authorization or not authorization.startswith('Bearer '):
+        fail(401, 'unauthenticated', 'Sign in to continue')
+    try:
+        payload, mac = authorization[7:].split('.', 1)
+        expected = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(mac, expected):
+            raise ValueError()
+        data = json.loads(base64.urlsafe_b64decode(payload + '=' * (-len(payload) % 4)))
+        if data['exp'] < time.time():
+            raise ValueError()
+        with db() as conn:
+            row = conn.execute('SELECT id,email,role,adult_attested_at FROM accounts WHERE id=%s AND disabled_at IS NULL', (data['sub'],)).fetchone()
+        if row:
+            return row
+    except (ValueError, KeyError, IndexError, json.JSONDecodeError, binascii.Error):
+        pass
+    fail(401, 'unauthenticated', 'Sign in to continue')
+
+def admin(user: dict = Depends(account)) -> dict:
+    if user['role'] != 'admin':
+        fail(403, 'forbidden', 'Admin access required')
+    return user
+
+def hash_password(password: str, salt: bytes | None = None):
+    salt = salt or secrets.token_bytes(16)
+    result = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
+    return salt.hex() + ':' + result.hex()
+
+def password_valid(password: str, stored: str) -> bool:
+    try:
+        salt, digest = stored.split(':')
+        return hmac.compare_digest(hash_password(password, bytes.fromhex(salt)).split(':')[1], digest)
+    except (ValueError, TypeError):
+        return False
+
+def check_rate(conn, bucket: str, limit: int, seconds: int):
+    # Bucket keys are HMACs; no raw IP or location is stored.
+    now = utcnow()
+    row = conn.execute('SELECT count,expires_at FROM rate_buckets WHERE bucket=%s FOR UPDATE', (bucket,)).fetchone()
+    if not row or row['expires_at'] <= now:
+        conn.execute("INSERT INTO rate_buckets(bucket,count,expires_at) VALUES (%s,1,now()+(%s || ' seconds')::interval) ON CONFLICT(bucket) DO UPDATE SET count=1,expires_at=EXCLUDED.expires_at", (bucket,seconds))
+    elif row['count'] >= limit:
+        fail(429, 'rate_limited', 'Please try again later')
+    else:
+        conn.execute('UPDATE rate_buckets SET count=count+1 WHERE bucket=%s', (bucket,))
+
+def client_bucket(request: Request, name: str) -> str:
+    ip = request.client.host if request.client else 'unknown'
+    return hmac.new(SECRET.encode(), (name + ':' + ip).encode(), hashlib.sha256).hexdigest()
+
+def idempotent_lookup(conn, user_id: str, route: str, key: str | None, payload: Any):
+    if not key:
+        fail(400, 'idempotency_required', 'Idempotency-Key header is required')
+    if len(key) > 128 or len(key) < 8:
+        fail(422, 'invalid_idempotency_key', 'Idempotency-Key must be 8 to 128 characters')
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    conn.execute('SELECT pg_advisory_xact_lock(hashtextextended(%s,0))', (user_id+':'+route+':'+key,))
+    row = conn.execute('SELECT request_hash,response_body FROM idempotency_records WHERE account_id=%s AND route=%s AND key=%s AND created_at>now()-interval \'24 hours\' FOR UPDATE', (user_id,route,key)).fetchone()
+    if row:
+        if row['request_hash'] != digest:
+            fail(409, 'idempotency_conflict', 'Key was used with different content')
+        return digest, row['response_body']
+    return digest, None
+
+def idempotent_store(conn, user_id, route, key, digest, body, status=201):
+    conn.execute('DELETE FROM idempotency_records WHERE account_id=%s AND route=%s AND key=%s', (user_id,route,key))
+    conn.execute('INSERT INTO idempotency_records(account_id,route,key,request_hash,response_status,response_body) VALUES (%s,%s,%s,%s,%s,%s)', (user_id,route,key,digest,status,json.dumps(body,default=str)))
+
+def cursor_encode(value: str):
+    return base64.urlsafe_b64encode(value.encode()).decode().rstrip('=')
+
+def cursor_decode(value: str | None):
+    if not value:
+        return ''
+    try:
+        decoded = base64.b64decode(value + '=' * (-len(value)%4), altchars=b'-_', validate=True).decode()
+        if len(decoded) > 100:
+            raise ValueError()
+        return decoded
+    except (ValueError, UnicodeDecodeError, binascii.Error):
+        fail(400, 'invalid_cursor', 'Invalid cursor')
+
+def point(lon, lat):
+    return f'SRID=4326;POINT({lon} {lat})'
+
+def within_ncr(conn, lon, lat):
+    row = conn.execute('SELECT ST_Covers(geom,ST_SetSRID(ST_MakePoint(%s,%s),4326)) AS inside FROM ncr_boundary WHERE id=1', (lon,lat)).fetchone()
+    if not row:
+        fail(503, 'boundary_unavailable', 'NCR boundary is not configured')
+    return row['inside']

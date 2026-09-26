@@ -1,0 +1,8 @@
+{
+  "name": "iYosi API development",
+  "dockerComposeFile": "../compose.yaml",
+  "service": "workspace",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose"
+}
+
