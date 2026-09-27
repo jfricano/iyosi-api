@@ -24,6 +24,9 @@ function fmt(value) {
   return String(value);
 }
 function date(value) { return value ? new Date(value).toLocaleString() : "—"; }
+function localDateTimeInputValue(value) {
+  return new Date(value.getTime() - value.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
 function notice(message, kind = "") {
   const node = $("#notice");
   node.textContent = message;
@@ -178,7 +181,7 @@ function decisionForm(detail, actions) {
   for (const value of ["signage", "venue_confirmation", "official_listing"]) evidenceType.append(option(value, value.replaceAll("_", " ")));
   add("public_source", "Public source summary", "text", { maxLength: 240 });
   add("evidence", "Private evidence details", "text", { maxLength: 1000 });
-  const reviewed = add("reviewed_at", "Reviewed at", "datetime-local"); reviewed.value = new Date().toISOString().slice(0, 16);
+  const reviewed = add("reviewed_at", "Reviewed at", "datetime-local"); reviewed.value = localDateTimeInputValue(new Date());
   add("name", "Corrected name", "text", { maxLength: 120 });
   const kind = add("kind", "Corrected kind", "select"); kind.append(option("", "Keep current kind"));
   for (const value of ["public_designated", "venue_designated", "informal_outdoor", "venue_claim"]) kind.append(option(value, value.replaceAll("_", " ")));

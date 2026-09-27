@@ -2,14 +2,15 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+process.env.TZ = "America/Los_Angeles";
 
 const source = fs.readFileSync(path.join(__dirname, "../admin/assets/admin.js"), "utf8");
 const context = {
   document: { querySelector: () => ({ addEventListener() {} }) },
   sessionStorage: { getItem: () => null },
 };
-vm.runInNewContext(`${source}\nglobalThis.testApi = { actionsFor, buildDecision };`, context);
-const { actionsFor, buildDecision } = context.testApi;
+vm.runInNewContext(`${source}\nglobalThis.testApi = { actionsFor, buildDecision, localDateTimeInputValue };`, context);
+const { actionsFor, buildDecision, localDateTimeInputValue } = context.testApi;
 const form = (values) => ({ get: (key) => values[key] ?? "" });
 
 const correction = { case: { source_type: "submission", state: "open" }, source: { intent: "correct" }, context: { place: { version: 7 } } };
@@ -29,5 +30,10 @@ assert.equal(correctionPayload.location.lat, 14.6);
 assert.equal(correctionPayload.access_point.lon, 121.01);
 assert.equal(correctionPayload.inside_venue, false);
 assert.throws(() => buildDecision(form({ action: "correct_place", reason: "Correct public entrance", lat: "14.6" }), placeCase), /both location coordinates/);
+
+const reviewedInstant = new Date("2026-01-15T12:34:56Z");
+assert.equal(localDateTimeInputValue(reviewedInstant), "2026-01-15T04:34");
+const verifyPayload = buildDecision(form({ action: "verify_designated", reason: "Checked official listing", evidence_type: "official_listing", public_source: "City listing", evidence: "Private lookup details", reviewed_at: localDateTimeInputValue(reviewedInstant) }), placeCase);
+assert.equal(verifyPayload.reviewed_at, "2026-01-15T12:34:00.000Z");
 
 console.log("Admin action and decision payload checks passed");
