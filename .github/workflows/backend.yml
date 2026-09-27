@@ -30,6 +30,10 @@ jobs:
           docker compose run --rm -T \
             -e TEST_DATABASE_URL=postgresql://iyosi:ci-only-password@db:5432/iyosi_test \
             workspace sh -ec 'PYTHONPATH=. python -m pytest -q tests'
+      - name: Admin console JavaScript checks
+        run: |
+          node --check admin/assets/admin.js
+          node tests/test_admin_ui.js
       - name: Verify checked-in OpenAPI
         run: |
           docker compose run --rm -T workspace sh -ec 'PYTHONPATH=. python scripts/export_openapi.py'
