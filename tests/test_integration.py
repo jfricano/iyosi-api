@@ -300,4 +300,154 @@ def test_merge_restore_and_deletion_guards(client):
     with psycopg.connect(TEST_DB) as conn:
         row=conn.execute('SELECT email,disabled_at FROM accounts WHERE id=%s',(account_id,)).fetchone()
         assert row[0].endswith('@deleted.invalid') and row[1] is not None
-        assert conn.execute('SELECT count(*) FROM moderation_decisions WHERE case_id=%s',(case['id'],)).fetchone()[0]==1
+        decision=conn.execute('SELECT old_state,new_state FROM moderation_decisions WHERE case_id=%s',(case['id'],)).fetchone()
+        assert decision is not None
+        assert 'email' not in decision[0]
+        assert decision[1]['email'].endswith('@deleted.invalid')
+
+
+def test_auth_tokens_login_and_disabled_accounts(client):
+    import base64
+    import hashlib
+    import hmac
+    import json
+    import time
+    account_id,headers=fixture_account()
+    with psycopg.connect(TEST_DB) as conn:
+        conn.execute('UPDATE accounts SET password_hash=%s WHERE id=%s',
+                     (core.hash_password('correct long password'),account_id))
+    assert client.get('/v1/me',headers=headers).status_code==200
+    assert client.get('/v1/me',headers={'Authorization':headers['Authorization']+'x'}).status_code==401
+    payload=base64.urlsafe_b64encode(json.dumps({'sub':account_id,'exp':int(time.time())-1}).encode()).decode().rstrip('=')
+    mac=hmac.new(core.SECRET.encode(),payload.encode(),hashlib.sha256).hexdigest()
+    assert client.get('/v1/me',headers={'Authorization':f'Bearer {payload}.{mac}'}).status_code==401
+    email=f'{account_id}@example.com'
+    login=client.post('/v1/auth/token',json={'email':email,'password':'correct long password'})
+    assert login.status_code==200,login.text
+    with psycopg.connect(TEST_DB) as conn:
+        conn.execute('UPDATE accounts SET disabled_at=now() WHERE id=%s',(account_id,))
+    assert client.get('/v1/me',headers=headers).status_code==401
+    assert client.get('/v1/me',headers={'Authorization':'Bearer '+login.json()['access_token']}).status_code==401
+    assert client.post('/v1/auth/token',json={'email':email,'password':'correct long password'}).status_code==401
+
+
+def test_rate_limit_concurrency_and_expiry(client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from fastapi import HTTPException
+    import secrets
+    bucket='concurrent-'+secrets.token_hex(6)
+    barrier=Barrier(12)
+
+    def attempt(_):
+        barrier.wait()
+        try:
+            with core.db() as conn:
+                core.check_rate(conn,bucket,5,3600)
+            return 200
+        except HTTPException as exc:
+            return exc.status_code
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        outcomes=list(pool.map(attempt,range(12)))
+    assert outcomes.count(200)==5 and outcomes.count(429)==7
+    with psycopg.connect(TEST_DB) as conn:
+        assert conn.execute('SELECT count FROM rate_buckets WHERE bucket=%s',(bucket,)).fetchone()[0]==5
+        conn.execute("UPDATE rate_buckets SET expires_at=now()-interval '1 second' WHERE bucket=%s",(bucket,))
+    with core.db() as conn:
+        core.check_rate(conn,bucket,5,3600)
+    with psycopg.connect(TEST_DB) as conn:
+        assert conn.execute('SELECT count FROM rate_buckets WHERE bucket=%s',(bucket,)).fetchone()[0]==1
+
+
+def test_submission_idempotency_concurrency_and_expiry(client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    import secrets
+    _,headers=fixture_account()
+    marker=secrets.token_hex(5)
+    request_headers={**headers,'Idempotency-Key':'concurrent-'+marker}
+    payload={'intent':'create','name':'Concurrent '+marker,'kind':'informal_outdoor',
+             'location':{'lat':14.71,'lon':121.01},'basis':'Observed during a concurrency test'}
+    barrier=Barrier(2)
+
+    def send(_):
+        barrier.wait()
+        return client.post('/v1/place-submissions',headers=request_headers,json=payload)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses=list(pool.map(send,range(2)))
+    assert [response.status_code for response in responses]==[201,201]
+    assert responses[0].json()==responses[1].json()
+    with psycopg.connect(TEST_DB) as conn:
+        assert conn.execute('SELECT count(*) FROM place_submissions WHERE name=%s',(payload['name'],)).fetchone()[0]==1
+        conn.execute("UPDATE idempotency_records SET created_at=now()-interval '25 hours' WHERE key=%s",(request_headers['Idempotency-Key'],))
+    expired=client.post('/v1/place-submissions',headers=request_headers,json=payload)
+    assert expired.status_code==201,expired.text
+    assert expired.json()['id']!=responses[0].json()['id']
+    with psycopg.connect(TEST_DB) as conn:
+        assert conn.execute('SELECT count(*) FROM place_submissions WHERE name=%s',(payload['name'],)).fetchone()[0]==2
+        assert conn.execute('SELECT count(*) FROM idempotency_records WHERE key=%s',(request_headers['Idempotency-Key'],)).fetchone()[0]==1
+
+
+def test_concurrent_deletion_requests_create_one_case(client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    account_id,headers=fixture_account()
+    barrier=Barrier(2)
+
+    def send(_):
+        barrier.wait()
+        return client.post('/v1/me/deletion-requests',headers=headers)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses=list(pool.map(send,range(2)))
+    assert [response.status_code for response in responses]==[201,201]
+    assert responses[0].json()==responses[1].json()
+    with psycopg.connect(TEST_DB) as conn:
+        requests=conn.execute("SELECT id FROM deletion_requests WHERE account_id=%s AND state='pending'",(account_id,)).fetchall()
+        assert len(requests)==1
+        assert conn.execute("SELECT count(*) FROM moderation_cases WHERE source_type='deletion_request' AND source_id=%s",(requests[0][0],)).fetchone()[0]==1
+
+
+def test_operator_recovery_and_ephemeral_metadata_cleanup(client):
+    import secrets
+    import subprocess
+    import sys
+    account_id,headers=fixture_account()
+    email=f'{account_id}@example.com'
+    env={**os.environ,'DATABASE_URL':TEST_DB}
+    grant=subprocess.run([sys.executable,'scripts/grant_admin.py',email],env=env,capture_output=True,text=True)
+    assert grant.returncode==0,grant.stderr
+    assert client.get('/v1/me',headers=headers).json()['role']=='admin'
+    token=secrets.token_hex(5)
+    with psycopg.connect(TEST_DB) as conn:
+        conn.execute("""INSERT INTO idempotency_records(account_id,route,key,request_hash,response_status,response_body,created_at)
+                     VALUES (%s,'test',%s,'digest',201,'{}',now()-interval '25 hours'),
+                            (%s,'test',%s,'digest',201,'{}',now())""",
+                     (account_id,'expired-'+token,account_id,'current-'+token))
+        conn.execute("INSERT INTO rate_buckets(bucket,count,expires_at) VALUES (%s,1,now()-interval '1 second'),(%s,1,now()+interval '1 hour')",
+                     ('expired-'+token,'current-'+token))
+    cleanup=subprocess.run([sys.executable,'scripts/cleanup.py'],env=env,capture_output=True,text=True)
+    assert cleanup.returncode==0,cleanup.stderr
+    with psycopg.connect(TEST_DB) as conn:
+        assert conn.execute('SELECT key FROM idempotency_records WHERE route=%s',('test',)).fetchall()==[('current-'+token,)]
+        assert conn.execute('SELECT bucket FROM rate_buckets WHERE bucket IN (%s,%s)',('expired-'+token,'current-'+token)).fetchall()==[('current-'+token,)]
+        conn.execute('UPDATE accounts SET disabled_at=now() WHERE id=%s',(account_id,))
+    denied=subprocess.run([sys.executable,'scripts/grant_admin.py',email],env=env,capture_output=True,text=True)
+    assert denied.returncode!=0 and 'No active account' in denied.stderr
+
+
+def test_duplicate_registration_attempts_count_against_limit(client):
+    import secrets
+    marker=secrets.token_hex(5)
+    email=f'duplicate-{marker}@example.com'
+    payload={'email':email,'password':'long valid password','adult_attested':True}
+    with psycopg.connect(TEST_DB) as conn:
+        conn.execute('DELETE FROM rate_buckets')
+    assert client.post('/v1/auth/register',json=payload).status_code==201
+    for _ in range(4):
+        response=client.post('/v1/auth/register',json=payload)
+        assert response.status_code==409 and response.json()['code']=='email_exists'
+    limited=client.post('/v1/auth/register',json=payload)
+    assert limited.status_code==429 and limited.json()['code']=='rate_limited'

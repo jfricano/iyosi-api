@@ -26,3 +26,9 @@
 - `test_checked_in_openapi_matches_runtime` passes, so the committed OpenAPI matches the running FastAPI schema.
 
 The highest-priority missing evidence is populated-map behavior, the remaining moderation actions, and an iOS walkthrough. The [sprint plan](BACKEND_SPRINT_PLAN.md) orders these alongside data sourcing and operator work.
+
+## B-008 auth and abuse evidence
+
+- A dedicated marked PostGIS database passed the full 26-test suite. Concurrent rate-limit requests admitted exactly the configured limit; simultaneous deletion requests returned one pending case; simultaneous idempotent submissions returned one result.
+- Tests cover token expiry and tampering, disabled-account rejection, idempotency and rate-bucket expiry, duplicate-registration throttling, active-only operator promotion, cleanup retention, and generic request-ID-tagged server errors.
+- Deletion approval pseudonymizes email and disables login while retaining contributions and audit links under the current private-pilot behavior. A final retention and erasure policy remains a release decision.

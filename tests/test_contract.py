@@ -94,3 +94,33 @@ def test_public_response_models_validate_signal_fields():
     row={'id':'plc_example','name':'Example','kind':'venue_designated','advisory_status':'verified_designated','publication_state':'published','lat':14.6,'lon':121.0,'access_lat':None,'access_lon':None,'address_label':None,'access_notes':None,'inside_venue':False,'verification_reviewed_at':now,'verification_public_source':'Posted sign','updated_at':now,'version':2,'merged_into':None,'last_confirmed_at':None,'rating_count':0,'rating_average':None}
     assert Place.model_validate(place_out(row)).verification.public_source=='Posted sign'
     assert PlaceSummary.model_validate(summary_out(row)).directions_allowed
+
+
+def test_unexpected_error_is_correlated_without_exposing_exception(monkeypatch,caplog):
+    from contextlib import contextmanager
+    from api import main
+
+    @contextmanager
+    def broken_db():
+        raise RuntimeError('private database connection details')
+        yield
+
+    monkeypatch.setattr(main,'db',broken_db)
+    response=TestClient(app,raise_server_exceptions=False).get('/v1/places',params={'bbox':'120.9,14.5,121.1,14.7'})
+    assert response.status_code==500
+    assert response.json()['code']=='internal_error'
+    assert response.json()['request_id']==response.headers['X-Request-ID']
+    assert 'private database connection details' not in response.text
+    assert 'private database connection details' not in caplog.text
+    assert response.json()['request_id'] in caplog.text
+
+
+def test_invalid_signing_secret_disables_auth_and_health(monkeypatch):
+    from api import core
+    monkeypatch.setattr(core,'SECRET','')
+    client=TestClient(app)
+    assert client.get('/health').json()['code']=='auth_unavailable'
+    assert client.get('/v1/me',headers={'Authorization':'Bearer forged.token'}).json()['code']=='auth_unavailable'
+    register=client.post('/v1/auth/register',json={'email':'secret-config@example.com',
+        'password':'long valid password','adult_attested':True})
+    assert register.status_code==503 and register.json()['code']=='auth_unavailable'

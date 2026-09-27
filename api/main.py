@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 from datetime import timedelta
@@ -14,10 +15,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from psycopg.errors import UniqueViolation
 
-from .core import account, admin, check_rate, client_bucket, cursor_decode, cursor_encode, db, fail, hash_password, idempotent_lookup, idempotent_store, password_valid, point, sign, uid, utcnow, within_ncr
+from .core import account, admin, auth_configured, check_rate, client_bucket, cursor_decode, cursor_encode, db, fail, hash_password, idempotent_lookup, idempotent_store, password_valid, point, sign, uid, utcnow, within_ncr
 from .schemas import Ack, AddressSuggestions, ConfirmationIn, ConfirmationPage, DecisionAck, DecisionIn, Error, Kind, Login, Me, Place, PlacePage, PublicReview, Register, ReportIn, ReviewIn, ReviewPage, Status, SubmissionIn, SubmissionList, Token
 
 app = FastAPI(title='iYosi API', version='1.0.0', description='Platform-neutral Metro Manila pilot API. Self-attested adult access is suitable only for a private pilot.', responses={400:{'model':Error},401:{'model':Error},403:{'model':Error},404:{'model':Error},409:{'model':Error},422:{'model':Error},429:{'model':Error},503:{'model':Error}})
+logger = logging.getLogger('iyosi.api')
 ADMIN_DIR = Path(__file__).resolve().parent.parent / 'admin'
 app.mount('/admin/assets', StaticFiles(directory=ADMIN_DIR / 'assets'), name='admin-assets')
 
@@ -48,8 +50,15 @@ async def validation_error(request: Request, exc: RequestValidationError):
     fields=[{'field':'.'.join(str(x) for x in error['loc']),'message':error['msg']} for error in exc.errors()]
     return JSONResponse(status_code=422,content={'code':'invalid_input','message':'Check the submitted fields','field_errors':fields,'request_id':request.state.request_id})
 
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    rid=getattr(request.state,'request_id',str(uuid4()))
+    logger.error('Unhandled API failure request_id=%s path=%s error_type=%s',rid,request.url.path,type(exc).__name__)
+    return JSONResponse(status_code=500,content={'code':'internal_error','message':'Request failed; try again later','request_id':rid},headers={'X-Request-ID':rid})
+
 @app.get('/health')
 def health():
+    auth_configured()
     try:
         with db() as conn:
             configured=conn.execute('SELECT 1 FROM ncr_boundary WHERE id=1').fetchone()
@@ -60,11 +69,14 @@ def health():
 
 @app.post('/v1/auth/register', response_model=Token, status_code=201)
 def register(data: Register, request: Request):
+    auth_configured()
     email = data.email.strip().lower()
     if '@' not in email or '.' not in email.rsplit('@',1)[-1]:
         fail(422,'invalid_email','Enter a valid email address')
+    # Count duplicate registration attempts too; an insert conflict rolls back its transaction.
     with db() as conn:
         check_rate(conn,client_bucket(request,'register'),5,3600)
+    with db() as conn:
         account_id = uid('acct')
         try:
             conn.execute('INSERT INTO accounts(id,email,password_hash,adult_attested_at) VALUES (%s,%s,%s,now())',(account_id,email,hash_password(data.password)))
@@ -88,6 +100,9 @@ def me(user=Depends(account)):
 @app.post('/v1/me/deletion-requests', response_model=Ack, status_code=201)
 def deletion_request(user=Depends(account)):
     with db() as conn:
+        # Serialize requests for this account, including against a concurrent approval.
+        if not conn.execute('SELECT id FROM accounts WHERE id=%s AND disabled_at IS NULL FOR UPDATE',(user['id'],)).fetchone():
+            fail(401,'unauthenticated','Sign in to continue')
         row=conn.execute("SELECT id FROM deletion_requests WHERE account_id=%s AND state='pending'",(user['id'],)).fetchone()
         if row: return {'id':row['id'],'state':'pending'}
         item_id=uid('del')

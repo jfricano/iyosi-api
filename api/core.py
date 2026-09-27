@@ -31,14 +31,18 @@ def fail(status: int, code: str, message: str):
 def utcnow():
     return datetime.now(timezone.utc)
 
-def sign(account_id: str) -> str:
+def auth_configured():
     if len(SECRET) < 32:
-        raise RuntimeError('IYOSI_SECRET must contain at least 32 characters')
+        fail(503, 'auth_unavailable', 'Authentication is not configured')
+
+def sign(account_id: str) -> str:
+    auth_configured()
     payload = base64.urlsafe_b64encode(json.dumps({'sub': account_id, 'exp': int(time.time()) + 86400}, separators=(',', ':')).encode()).decode().rstrip('=')
     mac = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return payload + '.' + mac
 
 def account(authorization: str | None = Header(default=None)) -> dict:
+    auth_configured()
     if not authorization or not authorization.startswith('Bearer '):
         fail(401, 'unauthenticated', 'Sign in to continue')
     try:
@@ -76,14 +80,14 @@ def password_valid(password: str, stored: str) -> bool:
 
 def check_rate(conn, bucket: str, limit: int, seconds: int):
     # Bucket keys are HMACs; no raw IP or location is stored.
-    now = utcnow()
-    row = conn.execute('SELECT count,expires_at FROM rate_buckets WHERE bucket=%s FOR UPDATE', (bucket,)).fetchone()
-    if not row or row['expires_at'] <= now:
-        conn.execute("INSERT INTO rate_buckets(bucket,count,expires_at) VALUES (%s,1,now()+(%s || ' seconds')::interval) ON CONFLICT(bucket) DO UPDATE SET count=1,expires_at=EXCLUDED.expires_at", (bucket,seconds))
-    elif row['count'] >= limit:
+    row = conn.execute("""INSERT INTO rate_buckets(bucket,count,expires_at)
+                       VALUES (%s,1,now()+(%s || ' seconds')::interval)
+                       ON CONFLICT(bucket) DO UPDATE SET
+                         count=CASE WHEN rate_buckets.expires_at<=now() THEN 1 ELSE rate_buckets.count+1 END,
+                         expires_at=CASE WHEN rate_buckets.expires_at<=now() THEN EXCLUDED.expires_at ELSE rate_buckets.expires_at END
+                       RETURNING count""", (bucket,seconds)).fetchone()
+    if row['count'] > limit:
         fail(429, 'rate_limited', 'Please try again later')
-    else:
-        conn.execute('UPDATE rate_buckets SET count=count+1 WHERE bucket=%s', (bucket,))
 
 def client_bucket(request: Request, name: str) -> str:
     ip = request.client.host if request.client else 'unknown'
