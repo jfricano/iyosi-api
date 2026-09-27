@@ -127,3 +127,177 @@ def test_create_submission_merge_keeps_canonical_place_link(client):
     assert duplicate['state']=='merged'
     assert duplicate['place_id']==canonical_id
     assert client.get('/v1/places',params={'bbox':'120.9,14.75,121.1,14.85'}).json()['items']==[]
+
+
+def fixture_account(role='contributor'):
+    """Avoid the public registration rate limit in broad integration matrices."""
+    import secrets
+    account_id='acct_'+secrets.token_hex(12)
+    email=f'{account_id}@example.com'
+    with psycopg.connect(TEST_DB) as conn:
+        conn.execute("INSERT INTO accounts(id,email,password_hash,adult_attested_at,role) VALUES (%s,%s,'test-only',now(),%s)",
+                     (account_id,email,role))
+    return account_id, {'Authorization':'Bearer '+core.sign(account_id)}
+
+
+def fixture_place(*, lat=14.6, lon=121.0, kind='public_designated', status='community_reported'):
+    import secrets
+    place_id='plc_'+secrets.token_hex(12)
+    with psycopg.connect(TEST_DB) as conn:
+        conn.execute("""INSERT INTO places(id,name,kind,advisory_status,location,access_point,access_notes)
+                     VALUES (%s,'Test pin',%s,%s,ST_SetSRID(ST_MakePoint(%s,%s),4326),
+                     ST_SetSRID(ST_MakePoint(%s,%s),4326),'Old entrance')""",
+                     (place_id,kind,status,lon,lat,lon+.0001,lat+.0001))
+    return place_id
+
+
+def fixture_case(place_id):
+    import secrets
+    case_id='case_'+secrets.token_hex(12)
+    with psycopg.connect(TEST_DB) as conn:
+        conn.execute("INSERT INTO moderation_cases(id,source_type,source_id) VALUES (%s,'manual',%s)",(case_id,place_id))
+    return case_id
+
+
+def decide_place(client, admin_headers, place_id, action, version, **extra):
+    case_id=fixture_case(place_id)
+    response=client.post(f'/v1/admin/moderation-cases/{case_id}/decisions',headers=admin_headers,
+                         json={'action':action,'reason':'Reviewed test evidence','expected_version':version,**extra})
+    return case_id,response
+
+
+def test_spatial_status_and_correction_integrity(client):
+    _,admin_headers=fixture_account('admin')
+    place_id=fixture_place()
+    bbox='120.9,14.5,121.1,14.7'
+    assert [x['id'] for x in client.get('/v1/places',params={'bbox':bbox}).json()['items'] if x['id']==place_id]==[place_id]
+    assert client.get('/v1/places',params={'bbox':'120.7,14.5,120.8,14.7'}).json()['items']==[]
+    assert place_id in [x['id'] for x in client.get('/v1/places/nearby',params={'lat':14.6,'lon':121.0,'radius_m':50}).json()['items']]
+    assert place_id not in [x['id'] for x in client.get('/v1/places/nearby',params={'lat':14.7,'lon':121.0,'radius_m':50}).json()['items']]
+    _,outside=decide_place(client,admin_headers,place_id,'correct_place',1,location={'lat':14.1,'lon':121.0})
+    assert outside.status_code==422 and outside.json()['code']=='outside_ncr'
+    _,correction=decide_place(client,admin_headers,place_id,'correct_place',1,
+                              location={'lat':14.62,'lon':121.02},access_point=None,access_notes=None)
+    assert correction.status_code==201,correction.text
+    detail=client.get(f'/v1/places/{place_id}').json()
+    assert detail['location']=={'lat':14.62,'lon':121.02}
+    assert detail['access_point'] is None and detail['access_notes'] is None
+    _,stale=decide_place(client,admin_headers,place_id,'set_status',1,advisory_status='prohibited')
+    assert stale.status_code==409 and stale.json()['code']=='version_conflict'
+    _,prohibited=decide_place(client,admin_headers,place_id,'set_status',2,advisory_status='prohibited')
+    assert prohibited.status_code==201,prohibited.text
+    assert place_id not in [x['id'] for x in client.get('/v1/places',params={'bbox':bbox}).json()['items']]
+    assert place_id in [x['id'] for x in client.get('/v1/places',params={'bbox':bbox,'include_prohibited':True}).json()['items']]
+    assert client.get(f'/v1/places/{place_id}').json()['directions_allowed'] is False
+    _,closed=decide_place(client,admin_headers,place_id,'set_status',3,advisory_status='closed')
+    assert closed.status_code==201,closed.text
+    assert client.get(f'/v1/places/{place_id}').json()['advisory_status']=='closed'
+    assert client.get(f'/v1/places/{place_id}').json()['access_point'] is None
+    _,hidden=decide_place(client,admin_headers,place_id,'hide_place',4)
+    assert hidden.status_code==201,hidden.text
+    assert client.get(f'/v1/places/{place_id}').status_code==404
+
+
+def test_confirmations_reviews_reports_and_privacy(client):
+    _,contributor=fixture_account()
+    _,second_contributor=fixture_account()
+    _,admin_headers=fixture_account('admin')
+    place_id=fixture_place(lat=14.64)
+    now=datetime.now(timezone.utc).isoformat()
+    changed=client.post(f'/v1/places/{place_id}/confirmations',headers={**contributor,'Idempotency-Key':'changed-observation'},
+                        json={'observation':'changed','observed_at':now,'access_note_suggestion':'Entrance moved'})
+    assert changed.status_code==201,changed.text
+    assert client.post(f'/v1/places/{place_id}/confirmations',headers={**contributor,'Idempotency-Key':'changed-observation'},
+                       json={'observation':'changed','observed_at':now,'access_note_suggestion':'Entrance moved'}).json()==changed.json()
+    conflict=client.post(f'/v1/places/{place_id}/confirmations',headers={**contributor,'Idempotency-Key':'changed-observation'},
+                         json={'observation':'gone','observed_at':now})
+    assert conflict.status_code==409 and conflict.json()['code']=='idempotency_conflict'
+    gone=client.post(f'/v1/places/{place_id}/confirmations',headers={**contributor,'Idempotency-Key':'gone-observation'},
+                     json={'observation':'gone','observed_at':now})
+    assert gone.status_code==429 and gone.json()['code']=='confirmation_frequency'
+    gone=client.post(f'/v1/places/{place_id}/confirmations',headers={**second_contributor,'Idempotency-Key':'gone-observation'},
+                     json={'observation':'gone','observed_at':now})
+    assert gone.status_code==201,gone.text
+    detail=client.get(f'/v1/places/{place_id}').json()
+    assert detail['last_confirmed_at'] is None and detail['advisory_status']=='community_reported'
+    public=client.get(f'/v1/places/{place_id}/confirmations').json()['items']
+    assert len(public)==2
+    assert all('account_id' not in observation and 'access_note_suggestion' not in observation for observation in public)
+    cases=client.get('/v1/admin/moderation-cases',headers=admin_headers).json()['items']
+    case=next(x for x in cases if x['source_id']==changed.json()['id'])
+    gone_case=next(x for x in cases if x['source_id']==gone.json()['id'])
+    resolved=client.post(f"/v1/admin/moderation-cases/{gone_case['id']}/decisions",headers=admin_headers,
+                         json={'action':'resolve','reason':'Reviewed and kept current status'})
+    assert resolved.status_code==201,resolved.text
+    repeated=client.post(f"/v1/admin/moderation-cases/{gone_case['id']}/decisions",headers=admin_headers,
+                         json={'action':'resolve','reason':'Reviewed and kept current status'})
+    assert repeated.status_code==409 and repeated.json()['code']=='case_resolved'
+    assert client.get(f'/v1/places/{place_id}').json()['advisory_status']=='community_reported'
+    hidden=client.post(f"/v1/admin/moderation-cases/{case['id']}/decisions",headers=admin_headers,
+                       json={'action':'hide_confirmation','reason':'Suggestion contains private information'})
+    assert hidden.status_code==201,hidden.text
+    remaining=client.get(f'/v1/places/{place_id}/confirmations').json()['items']
+    assert len(remaining)==1 and remaining[0]['id']==gone.json()['id']
+    review=client.put(f'/v1/places/{place_id}/reviews/me',headers=contributor,json={'stars':4,'body':'Useful details'})
+    assert review.status_code==200,review.text
+    report=client.post('/v1/reports',headers={**contributor,'Idempotency-Key':'review-report-one'},
+                       json={'target_type':'review','target_id':review.json()['id'],'reason':'privacy','detail':'Personal detail'})
+    assert report.status_code==201,report.text
+    assert client.post('/v1/reports',headers={**contributor,'Idempotency-Key':'review-report-one'},
+                       json={'target_type':'review','target_id':review.json()['id'],'reason':'privacy','detail':'Personal detail'}).json()==report.json()
+    cases=client.get('/v1/admin/moderation-cases',headers=admin_headers).json()['items']
+    case=next(x for x in cases if x['source_id']==report.json()['id'])
+    hidden=client.post(f"/v1/admin/moderation-cases/{case['id']}/decisions",headers=admin_headers,
+                       json={'action':'hide_review','reason':'Privacy report was valid'})
+    assert hidden.status_code==201,hidden.text
+    assert client.get(f'/v1/places/{place_id}').json()['rating']=={'average':None,'count':0}
+    assert client.get(f'/v1/places/{place_id}/reviews').json()['items']==[]
+    assert client.get('/v1/admin/moderation-cases',headers=contributor).status_code==403
+    with psycopg.connect(TEST_DB) as conn:
+        decisions=conn.execute('SELECT count(*) FROM moderation_decisions WHERE case_id=%s',(gone_case['id'],)).fetchone()[0]
+        assert decisions==1
+        with pytest.raises(psycopg.Error):
+            conn.execute('SAVEPOINT immutable_decision')
+            conn.execute('DELETE FROM moderation_decisions WHERE case_id=%s',(gone_case['id'],))
+        conn.rollback()
+
+
+def test_merge_restore_and_deletion_guards(client):
+    account_id,contributor=fixture_account()
+    _,admin_headers=fixture_account('admin')
+    canonical=fixture_place(lat=14.66)
+    duplicate=fixture_place(lat=14.67)
+    _,merged=decide_place(client,admin_headers,duplicate,'merge_place',1,canonical_place_id=canonical)
+    assert merged.status_code==201,merged.text
+    merged_detail=client.get(f'/v1/places/{duplicate}').json()
+    assert merged_detail['merged_into']==canonical
+    assert merged_detail['directions_allowed'] is False
+    assert merged_detail['access_point'] is None and merged_detail['access_notes'] is None
+    _,restore=decide_place(client,admin_headers,duplicate,'restore_place',2)
+    assert restore.status_code==422 and restore.json()['code']=='invalid_action'
+    review=client.put(f'/v1/places/{canonical}/reviews/me',headers=contributor,
+                      json={'stars':3,'body':'This review should disappear with its place'})
+    assert review.status_code==200,review.text
+    _,hide_canonical=decide_place(client,admin_headers,canonical,'hide_place',1)
+    assert hide_canonical.status_code==201,hide_canonical.text
+    report_hidden=client.post('/v1/reports',headers={**contributor,'Idempotency-Key':'hidden-review-report'},
+                              json={'target_type':'review','target_id':review.json()['id'],'reason':'privacy'})
+    assert report_hidden.status_code==404
+    _,restored_canonical=decide_place(client,admin_headers,canonical,'restore_place',2)
+    assert restored_canonical.status_code==201,restored_canonical.text
+    deletion=client.post('/v1/me/deletion-requests',headers=contributor)
+    assert deletion.status_code==201,deletion.text
+    assert client.post('/v1/me/deletion-requests',headers=contributor).json()==deletion.json()
+    cases=client.get('/v1/admin/moderation-cases',headers=admin_headers).json()['items']
+    case=next(x for x in cases if x['source_id']==deletion.json()['id'])
+    denied=client.post(f"/v1/admin/moderation-cases/{case['id']}/decisions",headers=admin_headers,
+                       json={'action':'resolve','reason':'Must approve deletion'})
+    assert denied.status_code==422
+    approved=client.post(f"/v1/admin/moderation-cases/{case['id']}/decisions",headers=admin_headers,
+                         json={'action':'approve_deletion','reason':'User requested deletion'})
+    assert approved.status_code==201,approved.text
+    assert client.get('/v1/me',headers=contributor).status_code==401
+    with psycopg.connect(TEST_DB) as conn:
+        row=conn.execute('SELECT email,disabled_at FROM accounts WHERE id=%s',(account_id,)).fetchone()
+        assert row[0].endswith('@deleted.invalid') and row[1] is not None
+        assert conn.execute('SELECT count(*) FROM moderation_decisions WHERE case_id=%s',(case['id'],)).fetchone()[0]==1

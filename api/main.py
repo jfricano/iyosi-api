@@ -94,8 +94,8 @@ def freshness(row):
 def place_out(row):
     return {'id':row['id'],'name':row['name'],'kind':row['kind'],'advisory_status':row['advisory_status'],
         'location':{'lat':row['lat'],'lon':row['lon']},
-        'access_point':{'lat':row['access_lat'],'lon':row['access_lon']} if row['access_lat'] is not None and row['advisory_status'] not in ('closed','prohibited') else None,
-        'address_label':row['address_label'],'access_notes':row['access_notes'] if row['advisory_status'] not in ('closed','prohibited') else None,
+        'access_point':{'lat':row['access_lat'],'lon':row['access_lon']} if row['access_lat'] is not None and row['publication_state']=='published' and row['advisory_status'] not in ('closed','prohibited') else None,
+        'address_label':row['address_label'],'access_notes':row['access_notes'] if row['publication_state']=='published' and row['advisory_status'] not in ('closed','prohibited') else None,
         'inside_venue':row['inside_venue'],
         'verification':{'reviewed_at':row['verification_reviewed_at'],'public_source':row['verification_public_source']} if row['advisory_status']=='verified_designated' else None,
         'last_confirmed_at':row['last_confirmed_at'],'rating':{'average':row['rating_average'],'count':row['rating_count']},
@@ -258,7 +258,7 @@ def report(data: ReportIn,key: str | None=Header(default=None,alias='Idempotency
         check_rate(conn,'report:'+user['id'],10,86400)
         if data.target_type=='place': visible_place(conn,data.target_id)
         else:
-            found=conn.execute('SELECT 1 FROM reviews WHERE id=%s AND hidden_at IS NULL AND deleted_at IS NULL',(data.target_id,)).fetchone()
+            found=conn.execute("SELECT 1 FROM reviews r JOIN places p ON p.id=r.place_id WHERE r.id=%s AND r.hidden_at IS NULL AND r.deleted_at IS NULL AND p.publication_state='published' AND p.advisory_status<>'closed'",(data.target_id,)).fetchone()
             if not found: fail(404,'not_found','Review unavailable')
         item_id=uid('rpt')
         conn.execute('INSERT INTO reports(id,account_id,target_type,target_id,reason,detail) VALUES (%s,%s,%s,%s,%s,%s)',(item_id,user['id'],data.target_type,data.target_id,data.reason,data.detail))
@@ -384,6 +384,8 @@ def decide(case_id: str,data: DecisionIn,user=Depends(admin)):
             if place_id:
                 row=conn.execute('SELECT * FROM places WHERE id=%s FOR UPDATE',(place_id,)).fetchone()
                 if not row: fail(404,'not_found','Place unavailable')
+                if row['publication_state']=='merged' and data.action!='resolve':
+                    fail(422,'invalid_action','Merged places cannot be changed or restored')
                 target_type='place'; target_id=place_id; old=snapshot(row)
                 if data.action!='resolve':
                     if data.expected_version is None or data.expected_version!=row['version']: fail(409,'version_conflict','Place version changed')
@@ -396,9 +398,12 @@ def decide(case_id: str,data: DecisionIn,user=Depends(admin)):
                     conn.execute("UPDATE places SET advisory_status=%s,verification_reviewed_at=NULL,verification_public_source=NULL,verification_evidence=NULL,version=version+1,updated_at=now() WHERE id=%s",(data.advisory_status,place_id))
                 elif data.action=='merge_place':
                     if not data.canonical_place_id or data.canonical_place_id==place_id: fail(422,'invalid_merge','A different canonical place is required')
+                    if row['publication_state']!='published': fail(422,'invalid_action','Only a published place can be merged')
                     visible_place(conn,data.canonical_place_id)
                     conn.execute("UPDATE places SET publication_state='merged',merged_into=%s,version=version+1,updated_at=now() WHERE id=%s",(data.canonical_place_id,place_id))
                 elif data.action in ('hide_place','restore_place'):
+                    required_state='published' if data.action=='hide_place' else 'hidden'
+                    if row['publication_state']!=required_state: fail(422,'invalid_action','Place is not in the required publication state')
                     conn.execute('UPDATE places SET publication_state=%s,version=version+1,updated_at=now() WHERE id=%s',('hidden' if data.action=='hide_place' else 'published',place_id))
                 elif data.action=='correct_place':
                     if data.location and not within_ncr(conn,data.location.lon,data.location.lat): fail(422,'outside_ncr','Pin must be inside NCR')
@@ -406,7 +411,7 @@ def decide(case_id: str,data: DecisionIn,user=Depends(admin)):
                     kind=data.kind or row['kind']
                     if kind=='venue_designated' and data.inside_venue is None and row['inside_venue'] is None: fail(422,'inside_venue_required','Venue designated areas must say inside or outside')
                     status='community_reported' if row['advisory_status']=='verified_designated' and kind not in ('public_designated','venue_designated') else row['advisory_status']
-                    conn.execute("UPDATE places SET name=COALESCE(%s,name),kind=%s,location=COALESCE(%s,location),access_point=COALESCE(%s,access_point),access_notes=COALESCE(%s,access_notes),inside_venue=COALESCE(%s,inside_venue),advisory_status=%s,verification_reviewed_at=CASE WHEN %s='verified_designated' THEN verification_reviewed_at ELSE NULL END,verification_public_source=CASE WHEN %s='verified_designated' THEN verification_public_source ELSE NULL END,verification_evidence=CASE WHEN %s='verified_designated' THEN verification_evidence ELSE NULL END,version=version+1,updated_at=now() WHERE id=%s",(data.name,kind,point(data.location.lon,data.location.lat) if data.location else None,point(data.access_point.lon,data.access_point.lat) if data.access_point else None,data.access_notes,data.inside_venue,status,status,status,status,place_id))
+                    conn.execute("UPDATE places SET name=COALESCE(%s,name),kind=%s,location=COALESCE(%s,location),access_point=CASE WHEN %s THEN %s ELSE access_point END,access_notes=CASE WHEN %s THEN %s ELSE access_notes END,inside_venue=COALESCE(%s,inside_venue),advisory_status=%s,verification_reviewed_at=CASE WHEN %s='verified_designated' THEN verification_reviewed_at ELSE NULL END,verification_public_source=CASE WHEN %s='verified_designated' THEN verification_public_source ELSE NULL END,verification_evidence=CASE WHEN %s='verified_designated' THEN verification_evidence ELSE NULL END,version=version+1,updated_at=now() WHERE id=%s",(data.name,kind,point(data.location.lon,data.location.lat) if data.location else None,'access_point' in data.model_fields_set,point(data.access_point.lon,data.access_point.lat) if data.access_point else None,'access_notes' in data.model_fields_set,data.access_notes,data.inside_venue,status,status,status,status,place_id))
                 elif data.action!='resolve': fail(422,'invalid_action','Action is not valid for this case')
                 new=snapshot(conn.execute('SELECT * FROM places WHERE id=%s',(place_id,)).fetchone())
             elif review_id:
