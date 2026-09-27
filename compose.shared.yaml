@@ -2,17 +2,11 @@
 name: iyosi_shared
 
 x-api-image: &api_image
-  image: ${IYOSI_API_IMAGE:-iyosi-api:local}
-  build:
-    context: .
-    dockerfile: infra/api/Dockerfile
+  image: ${IYOSI_API_IMAGE:?Set a reviewed digest-pinned ARM64 API image}
 
 services:
   db:
-    image: ${IYOSI_DB_IMAGE:-iyosi-postgis:local}
-    build:
-      context: .
-      dockerfile: infra/db/Dockerfile
+    image: ${IYOSI_DB_IMAGE:?Set a reviewed digest-pinned ARM64 PostGIS image}
     restart: unless-stopped
     stop_grace_period: 30s
     networks: [data]

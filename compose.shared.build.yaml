@@ -1,0 +1,14 @@
+# Local development override. Do not include it in production Compose commands.
+services:
+  db:
+    build:
+      context: .
+      dockerfile: infra/db/Dockerfile
+  migrate:
+    build:
+      context: .
+      dockerfile: infra/api/Dockerfile
+  api:
+    build:
+      context: .
+      dockerfile: infra/api/Dockerfile

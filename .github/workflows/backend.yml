@@ -11,9 +11,33 @@ jobs:
     env:
       IYOSI_SECRET: ci-only-test-secret-012345678901234567890123456789
       POSTGRES_PASSWORD: ci-only-password
+      IYOSI_APP_DB_PASSWORD: ci-only-runtime-password
+      IYOSI_EDGE_NETWORK: edge-iyosi
+      IYOSI_TRUSTED_PROXY_IPS: 10.203.41.2
+      IYOSI_API_IMAGE: iyosi-api:ci
+      IYOSI_DB_IMAGE: iyosi-postgis:ci
       COMPOSE_PROJECT_NAME: iyosi_ci
     steps:
       - uses: actions/checkout@v4
+      - name: Validate shared-host isolation contract
+        run: |
+          docker compose -f compose.shared.yaml config --format json > /tmp/iyosi-shared-config.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path('/tmp/iyosi-shared-config.json').read_text())
+          services = config['services']
+          assert all('build' not in service for service in services.values())
+          assert all('ports' not in service for service in services.values())
+          assert set(services['api']['networks']) == {'data', 'edge'}
+          assert set(services['db']['networks']) == {'data'}
+          assert set(services['migrate']['networks']) == {'data'}
+          assert config['networks']['data']['internal'] is True
+          assert config['networks']['edge']['name'] == 'edge-iyosi'
+          assert services['api']['environment']['IYOSI_TRUSTED_PROXY_IPS'] == '10.203.41.2'
+          PY
+          docker compose -f compose.shared.yaml -f compose.shared.build.yaml config --quiet
       - name: Build test and PostGIS images
         run: docker compose build workspace db
       - name: Start PostGIS
