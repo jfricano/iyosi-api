@@ -1,0 +1,42 @@
+name: Backend
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  contract-and-postgis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      IYOSI_SECRET: ci-only-test-secret-012345678901234567890123456789
+      POSTGRES_PASSWORD: ci-only-password
+      COMPOSE_PROJECT_NAME: iyosi_ci
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build test and PostGIS images
+        run: docker compose build workspace db
+      - name: Start PostGIS
+        run: docker compose up -d --wait db
+      - name: Create marked, dedicated integration database
+        run: |
+          docker compose exec -T db sh -ec 'createdb -U "$POSTGRES_USER" iyosi_test'
+          docker compose exec -T db sh -ec 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d iyosi_test' <<'SQL'
+          CREATE TABLE iyosi_integration_test_guard (purpose text PRIMARY KEY);
+          INSERT INTO iyosi_integration_test_guard VALUES ('iyosi dedicated integration tests');
+          SQL
+      - name: Contract and PostGIS tests
+        run: |
+          docker compose run --rm -T \
+            -e TEST_DATABASE_URL=postgresql://iyosi:ci-only-password@db:5432/iyosi_test \
+            workspace sh -ec 'PYTHONPATH=. python -m pytest -q tests'
+      - name: Verify checked-in OpenAPI
+        run: |
+          docker compose run --rm -T workspace sh -ec 'PYTHONPATH=. python scripts/export_openapi.py'
+          git diff --exit-code -- docs/openapi.json
+      - name: Compose logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail=100 db
+      - name: Stop containers
+        if: always()
+        run: docker compose down -v --remove-orphans

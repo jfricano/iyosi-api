@@ -14,6 +14,8 @@ Read the [product brief](docs/PRODUCT_BRIEF.md) for the full story, experience, 
 
 The [backend implementation plan](docs/BACKEND_EXECUTIVE_PLAN.md), [sprint backlog](docs/BACKEND_SPRINT_PLAN.md), and [test map](docs/BACKEND_TEST_MAP.md) track the work from the current local API to a usable private pilot.
 
+The [operations runbook](docs/OPERATIONS.md) covers the immutable pilot image, CI, daily cleanup, backup/restore drills, and hosting decisions.
+
 ## Current state
 
 This repository contains the FastAPI v1 server, PostGIS migration, NCR boundary seed, generated [OpenAPI contract](docs/openapi.json), and contract/integration tests. The Android pilot client and SwiftUI iOS client live in separate repositories. The admin web UI is not yet implemented. The API is platform neutral.

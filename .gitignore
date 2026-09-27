@@ -1,4 +1,6 @@
 .env
+.env.pilot
+*.dump
 .DS_Store
 __pycache__/
 *.py[cod]
