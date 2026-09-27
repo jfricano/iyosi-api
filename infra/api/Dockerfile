@@ -5,7 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt \
-    && useradd --system --uid 10001 --home /app iyosi
+    && groupadd --system --gid 10001 iyosi \
+    && useradd --system --uid 10001 --gid 10001 --home /app iyosi
 
 COPY --chown=iyosi:iyosi api /app/api
 COPY --chown=iyosi:iyosi admin /app/admin

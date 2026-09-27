@@ -14,6 +14,7 @@ services:
       context: .
       dockerfile: infra/db/Dockerfile
     restart: unless-stopped
+    stop_grace_period: 30s
     networks: [data]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-iyosi}
@@ -24,6 +25,9 @@ services:
     cpus: 0.5
     mem_limit: 1536m
     pids_limit: 256
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iyosi} -d ${POSTGRES_DB:-iyosi}"]
       interval: 5s
@@ -38,6 +42,12 @@ services:
     tmpfs: /tmp
     security_opt: ["no-new-privileges:true"]
     networks: [data]
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-iyosi}:${POSTGRES_PASSWORD:?Set a migration database password}@db:5432/${POSTGRES_DB:-iyosi}
       IYOSI_APP_DB_USER: ${IYOSI_APP_DB_USER:-iyosi_app}
@@ -50,6 +60,7 @@ services:
     <<: *api_image
     command: ["sh", "scripts/serve_api.sh"]
     restart: unless-stopped
+    stop_grace_period: 30s
     read_only: true
     tmpfs: /tmp
     security_opt: ["no-new-privileges:true"]
@@ -66,6 +77,9 @@ services:
     cpus: 0.5
     mem_limit: 512m
     pids_limit: 128
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
     depends_on:
       db:
         condition: service_healthy
