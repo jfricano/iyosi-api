@@ -12,7 +12,7 @@ Help adults find current, clearly labeled information about where smoking is per
 
 Read the [product brief](docs/PRODUCT_BRIEF.md) for the full story, experience, release scope, and naming ideas. The [Codex API handoff](docs/API_HANDOFF.md) links the conceptual architecture, v1 feature specification, and API resource model for the next development step. [Launch notes](docs/LAUNCH_NOTES.md) cover moderation, privacy, legal review, and future business options.
 
-The [backend implementation plan](docs/BACKEND_EXECUTIVE_PLAN.md), [sprint backlog](docs/BACKEND_SPRINT_PLAN.md), and [test map](docs/BACKEND_TEST_MAP.md) track the work from the current local API to a usable private pilot.
+The [backend v1 delivery record](docs/BACKEND_V1_DELIVERY.md) summarizes what is implemented and verified, with remaining hosted-pilot gates. The [implementation plan](docs/BACKEND_EXECUTIVE_PLAN.md), [sprint backlog](docs/BACKEND_SPRINT_PLAN.md), and [test map](docs/BACKEND_TEST_MAP.md) retain the decision trail.
 
 The [operations runbook](docs/OPERATIONS.md) covers the immutable pilot image, CI, daily cleanup, backup/restore drills, and hosting decisions.
 
@@ -40,10 +40,10 @@ Operators can sign in to the [moderation console](docs/ADMIN_OPERATIONS.md) at `
 
 ## Tests
 
-The local contract suite runs with Python 3.12 and dependencies in `requirements.txt`:
+The Python suite runs with Python 3.12 and dependencies in `requirements.txt`:
 
 ```sh
-PYTHONPATH=. python -m pytest -q tests/test_contract.py
+PYTHONPATH=. python -m pytest -q tests/test_contract.py tests/test_geocoder.py tests/test_admin_ui.py tests/test_observability.py
 ```
 
 The PostGIS integration test needs a dedicated test database. With Compose running:
@@ -51,10 +51,12 @@ The PostGIS integration test needs a dedicated test database. With Compose runni
 ```sh
 docker compose exec db psql -U iyosi -d postgres -c 'CREATE DATABASE iyosi_test;'
 docker compose exec db psql -U iyosi -d iyosi_test -c "CREATE TABLE iyosi_integration_test_guard (purpose text PRIMARY KEY); INSERT INTO iyosi_integration_test_guard VALUES ('iyosi dedicated integration tests');"
-docker compose exec -e TEST_DATABASE_URL=postgresql://iyosi:local-development-only@db:5432/iyosi_test workspace sh -c 'PYTHONPATH=. python -m pytest -q tests/test_integration.py'
+docker compose exec -T -e TEST_DATABASE_URL=postgresql://iyosi:local-development-only@db:5432/iyosi_test workspace sh -c 'PYTHONPATH=. python -m pytest -q tests'
+node --check admin/assets/admin.js
+node tests/test_admin_ui.js
 ```
 
-Set `TEST_DATABASE_URL` to an empty dedicated database whose name ends in `_test` and create its marker before running the suite. The fixture checks both before it truncates tables. Re-generate OpenAPI with `PYTHONPATH=. python scripts/export_openapi.py`. Schedule `docker compose exec workspace python scripts/cleanup.py` daily to remove expired idempotency and rate-limit metadata. The local Compose stack has been started and `/health` verified on the development Mac; the database contains no published places until an administrator publishes reviewed submissions.
+Set `TEST_DATABASE_URL` to an empty dedicated database whose name ends in `_test` and create its marker before running the suite. The fixture checks both before it truncates tables. Re-generate OpenAPI with `PYTHONPATH=. python scripts/export_openapi.py`. Schedule `docker compose exec workspace python scripts/cleanup.py` daily to remove expired idempotency and rate-limit metadata. The local Compose stack has been started and `/health` verified on the development Mac; the normal database contains no published places until an administrator publishes reviewed submissions.
 
 ## Repositories and ownership
 

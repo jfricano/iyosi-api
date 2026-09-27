@@ -3,6 +3,8 @@
 **Handoff lane:** Work → Codex review  
 **Release:** Android pilot in the National Capital Region, backed by an API reusable by iOS.
 
+**2026-09-26 implementation update:** A SwiftUI iOS client and the shared backend v1 now exist. The original Android-first release wording and deferred-iOS line below are historical scope notes. Current backend evidence and remaining hosted-pilot gates are in the [backend v1 delivery record](BACKEND_V1_DELIVERY.md).
+
 ## Product rule
 
 The app maps **reported places**, with clear status and freshness. It never promises that a user will be allowed to smoke at a pin. A community observation, star rating, or venue claim does not establish legal approval. The four place kinds and independent statuses are defined in [Conceptual architecture](CONCEPTUAL_ARCHITECTURE.md).

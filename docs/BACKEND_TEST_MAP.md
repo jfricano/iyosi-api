@@ -1,6 +1,24 @@
 # Backend test map
 
-**Baseline:** 2026-09-26. This maps the [v1 feature spec](FEATURE_SPEC_V1.md) to evidence in the API repository. Client behavior needs a separate iOS walkthrough against populated data.
+**Final implementation snapshot:** 2026-09-26. The initial gap map and Sprint 0/B-008 evidence below are historical checkpoints. See the [v1 delivery record](BACKEND_V1_DELIVERY.md) for release gates.
+
+## Final requirement evidence
+
+| Feature | Verification |
+| --- | --- |
+| F01–F02 map, viewport, filters | Bounded cursor and viewport contract tests; PostGIS spatial/status/hidden/prohibited cases; 5,000-place benchmark; four synthetic pins visible in iOS simulator. |
+| F03 address search | Geoapify request and normalization tests, local demo provider, malformed/outside-NCR/timeout tests; iOS builds with conditional provider attribution. Live hosted Geoapify key remains a deployment gate. |
+| F04 near me | Bounded nearby endpoint and no server-side location history. iOS permission denial remains device acceptance work. |
+| F05 detail | Published, closed, merged, verification, rating, access, and privacy behavior covered in contract/PostGIS tests; populated iOS map smoke passed. |
+| F06 proposals | Strict input, pending publication, correction, duplicates, NCR boundary, merge, and idempotency/concurrency covered in PostGIS tests. |
+| F07–F09 confirmations, reviews, reports | Still/changed/gone, review upsert and hidden aggregate, place/review reports, moderation queue and privacy covered in PostGIS tests. |
+| F10 moderation | Admin role, full decision cases, version conflict, audit and immutable history in PostGIS tests; live admin queue/detail/decision journey and console JavaScript checks passed. |
+| F11 accounts and deletion | Token expiry/tamper, disabled account, concurrent deletion, admin bootstrap, retention behavior and cleanup covered in tests. Final erasure policy is a release gate. |
+| F12 adult access | Registration self-attestation validation tested; public-launch age assurance remains a policy gate. |
+
+The merged suite passed **33 Python tests** against a marked dedicated PostGIS database. Admin JavaScript checks, runtime OpenAPI comparison, pilot-image health/admin checks, and a disposable backup/restore drill also passed. The iOS app built and displayed the four fictional map pins in the simulator. Hosted HTTPS, a real provider key, real reviewed places, and a complete physical-device client walkthrough remain release gates.
+
+## Historical Sprint 0 gap map
 
 | Feature | Backend evidence today | Next verification |
 | --- | --- | --- |

@@ -1,6 +1,17 @@
 # Backend delivery sprint plan
 
-**Planning baseline:** 2026-09-26. **Scope:** shared iYosi API, PostGIS data, moderation operations, address search, iOS integration, and private-pilot service operations. **Status:** working delivery plan; estimates are forecasts, not commitments. The user is the sole credited author; executive, scrum, engineering, and QA roles here organize agent work and do not imply hired staff or additional authors.
+**Planning baseline:** 2026-09-26. **Scope:** shared iYosi API, PostGIS data, moderation operations, address search, iOS integration, and private-pilot service operations. **Status:** implementation sprints completed locally; the forecast below is retained as a planning record. The [v1 delivery record](BACKEND_V1_DELIVERY.md) is the current handoff. The user is the sole credited author; executive, scrum, engineering, and QA roles here organize agent work and do not imply hired staff or additional authors.
+
+## Final sprint review — 2026-09-26
+
+- **B-001/B-002:** migration 002, protected marked test database, baseline test map, and OpenAPI gate completed.
+- **B-003/B-004:** isolated fictional seed and local search fixture, spatial/status/correction cases, and populated iOS map smoke completed. Real place evidence was explicitly deferred to the content gate.
+- **B-005/B-006:** moderation matrix, private-context admin console, conflict reload, time-zone fix, and live fictional-data decision journey completed.
+- **B-007/B-008:** server-side Geoapify adapter, attribution in iOS, safe provider failures, concurrency/rate/idempotency/auth/deletion coverage completed. Real provider key and retention policy remain deployment decisions.
+- **B-009/B-010:** iOS simulator build and populated map, 5,000-place PostGIS benchmark, request/provider logs, queue-age gauges completed. A real-device HTTPS journey and hosted-edge latency await a host.
+- **B-011/B-012:** pilot image, CI, local backup/restore, runbook and release evidence completed. External TLS, alerts, off-host backups, real-data provenance, and named operator remain private-pilot gates.
+
+The integrated Python suite passed **33 tests**; the admin JavaScript checks and OpenAPI comparison passed. No further backend implementation sprint is planned for the defined v1 code. Hosted acceptance findings should become focused tickets. The historical estimates and “next” statements below describe the original forecast, not current implementation status.
 
 ## Starting point and target
 

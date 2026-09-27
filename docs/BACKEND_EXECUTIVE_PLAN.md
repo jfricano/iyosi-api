@@ -4,6 +4,8 @@
 **Credited author and decision owner:** Jason Fricano
 **Delivery companion:** [Backend sprint plan](BACKEND_SPRINT_PLAN.md)
 
+**Implementation outcome:** The backend v1 code, admin console, synthetic iOS development stack, provider adapter, CI, and pilot operations template are complete locally. See the [v1 delivery record](BACKEND_V1_DELIVERY.md) for evidence and remaining hosted/content/policy gates. The “starting point” and “immediate order” below are the original baseline retained for traceability.
+
 ## Direction
 
 Continue the existing FastAPI/PostGIS modular monolith and `/v1` OpenAPI contract. The API owns all writes; an internal admin web client will use its moderation endpoints. Build a useful **private NCR pilot** first, then address the additional operating, privacy, legal, and age-access requirements for a public release. This is an execution plan for an existing backend, not a new design or a hiring plan.
