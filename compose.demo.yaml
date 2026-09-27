@@ -1,0 +1,48 @@
+services:
+  demo_db:
+    build:
+      context: .
+      dockerfile: infra/db/Dockerfile
+    environment:
+      POSTGRES_DB: iyosi_demo
+      POSTGRES_USER: ${POSTGRES_USER:-iyosi}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+    volumes:
+      - demo_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-iyosi} -d iyosi_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  demo_geocoder:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    command: python scripts/demo_geocoder.py
+    working_dir: /workspace
+    volumes:
+      - .:/workspace:ro
+
+  demo_api:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    command: sh scripts/start_api.sh
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+    ports:
+      - "127.0.0.1:8001:8000"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-iyosi}:${POSTGRES_PASSWORD:-local-development-only}@demo_db:5432/iyosi_demo
+      IYOSI_SECRET: ${IYOSI_SECRET:?Set IYOSI_SECRET in .env}
+      GEOCODER_URL: http://demo_geocoder:8080/search
+    depends_on:
+      demo_db:
+        condition: service_healthy
+      demo_geocoder:
+        condition: service_started
+
+volumes:
+  demo_postgres_data:

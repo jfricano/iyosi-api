@@ -1,0 +1,30 @@
+[
+  {
+    "name": "DEMO ONLY — Fictional Manila marker",
+    "kind": "public_designated",
+    "lat": 14.5995,
+    "lon": 120.9842,
+    "inside_venue": null
+  },
+  {
+    "name": "DEMO ONLY — Fictional Quezon City marker",
+    "kind": "venue_designated",
+    "lat": 14.6488,
+    "lon": 121.0509,
+    "inside_venue": true
+  },
+  {
+    "name": "DEMO ONLY — Fictional Makati marker",
+    "kind": "informal_outdoor",
+    "lat": 14.5547,
+    "lon": 121.0244,
+    "inside_venue": null
+  },
+  {
+    "name": "DEMO ONLY — Fictional Taguig marker",
+    "kind": "venue_claim",
+    "lat": 14.5505,
+    "lon": 121.0504,
+    "inside_venue": false
+  }
+]
