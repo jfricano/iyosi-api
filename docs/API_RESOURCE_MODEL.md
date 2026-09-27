@@ -74,6 +74,8 @@ This is synthetic sample data. `verification` is null unless an admin recorded s
 
 Authentication uses `POST /v1/auth/register` and `POST /v1/auth/token`. Admins can open a manual place case with `POST /v1/admin/moderation-cases?place_id=...`; `/health` checks the database and NCR seed. Public reads are anonymous while Android presents the adult-access prompt. Public-launch age assurance remains a separate decision.
 
+The admin case detail includes a `context` object with the current place and, for review reports, the reported review. The place includes its current `version` so the operator can send `expected_version` for changes. This object and the case's private source and decision snapshots are available only to admin accounts. The internal operator UI is documented in [Admin operations](ADMIN_OPERATIONS.md).
+
 ## Request rules
 
 - `place_submission` has an `intent` of `create` or `correct`. A correction includes `place_id`; a new place does not. Requests carry a proposed kind, name, point, optional access point, access notes, and basis/evidence text or public URL. The server sets pending state and rejects any client attempt to set advisory status or verification.

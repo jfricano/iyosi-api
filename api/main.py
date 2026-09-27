@@ -1,19 +1,33 @@
 import json
 import os
 from datetime import timedelta
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
 import psycopg
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
 from psycopg.errors import UniqueViolation
 
 from .core import account, admin, check_rate, client_bucket, cursor_decode, cursor_encode, db, fail, hash_password, idempotent_lookup, idempotent_store, password_valid, point, sign, uid, utcnow, within_ncr
 from .schemas import Ack, AddressSuggestions, ConfirmationIn, ConfirmationPage, DecisionAck, DecisionIn, Error, Kind, Login, Me, Place, PlacePage, PublicReview, Register, ReportIn, ReviewIn, ReviewPage, Status, SubmissionIn, SubmissionList, Token
 
 app = FastAPI(title='iYosi API', version='1.0.0', description='Platform-neutral Metro Manila pilot API. Self-attested adult access is suitable only for a private pilot.', responses={400:{'model':Error},401:{'model':Error},403:{'model':Error},404:{'model':Error},409:{'model':Error},422:{'model':Error},429:{'model':Error},503:{'model':Error}})
+ADMIN_DIR = Path(__file__).resolve().parent.parent / 'admin'
+app.mount('/admin/assets', StaticFiles(directory=ADMIN_DIR / 'assets'), name='admin-assets')
+
+@app.get('/admin', include_in_schema=False)
+def admin_page():
+    return FileResponse(ADMIN_DIR / 'index.html', headers={
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        'Referrer-Policy': 'no-referrer',
+        'X-Content-Type-Options': 'nosniff',
+    })
 
 @app.middleware('http')
 async def request_id(request: Request, call_next):
@@ -297,6 +311,17 @@ def case_detail(case_id: str,user=Depends(admin)):
             coords=conn.execute('SELECT ST_Y(location) lat,ST_X(location) lon,ST_Y(access_point) access_lat,ST_X(access_point) access_lon FROM place_submissions WHERE id=%s',(case['source_id'],)).fetchone()
         elif case['source_type']=='manual':
             coords=conn.execute('SELECT ST_Y(location) lat,ST_X(location) lon FROM places WHERE id=%s',(case['source_id'],)).fetchone()
+        place_id=None; review=None
+        if source:
+            if case['source_type']=='submission': place_id=source['place_id']
+            elif case['source_type']=='confirmation': place_id=source['place_id']
+            elif case['source_type']=='manual': place_id=source['id']
+            elif case['source_type']=='report':
+                if source['target_type']=='place': place_id=source['target_id']
+                else:
+                    review=conn.execute('SELECT id,place_id,stars,body,hidden_at,deleted_at,created_at,updated_at FROM reviews WHERE id=%s',(source['target_id'],)).fetchone()
+                    if review: place_id=review['place_id']
+        place=conn.execute('SELECT id,name,kind,advisory_status,publication_state,version,address_label,access_notes,inside_venue,verification_public_source,verification_evidence,ST_Y(location) lat,ST_X(location) lon FROM places WHERE id=%s',(place_id,)).fetchone() if place_id else None
     if source:
         source=dict(source)
         for field in ('location','access_point'):
@@ -305,7 +330,7 @@ def case_detail(case_id: str,user=Depends(admin)):
         if coords:
             source['location']={'lat':coords['lat'],'lon':coords['lon']}
             source['access_point']={'lat':coords['access_lat'],'lon':coords['access_lon']} if coords.get('access_lat') is not None else None
-    return {'case':case,'source':source,'decisions':decisions}
+    return {'case':case,'source':source,'context':{'place':place,'review':review},'decisions':decisions}
 
 @app.post('/v1/admin/moderation-cases',response_model=Ack,status_code=201)
 def manual_case(place_id: str,user=Depends(admin)):

@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>iYosi moderation</title>
+  <link rel="stylesheet" href="/admin/assets/admin.css">
+  <script src="/admin/assets/admin.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div><strong>iYosi</strong><span class="separator">/</span> Moderation <span class="badge">Private pilot</span></div>
+    <div id="identity" hidden><span id="operator"></span><button id="sign-out" class="quiet" type="button">Sign out</button></div>
+  </header>
+  <main>
+    <p id="notice" role="status" aria-live="polite" hidden></p>
+    <section id="login-view" class="login-card">
+      <h1>Operator sign in</h1>
+      <p>Use an account granted the admin role. This page exposes private reports and evidence.</p>
+      <form id="login-form">
+        <label>Email<input id="email" type="email" autocomplete="username" required></label>
+        <label>Password<input id="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">Sign in</button>
+      </form>
+    </section>
+    <section id="workspace" hidden>
+      <div class="page-heading"><div><h1>Moderation queue</h1><p>Review source material and record a reason for every decision.</p></div><button id="refresh" class="secondary" type="button">Refresh</button></div>
+      <div class="workspace-grid">
+        <aside class="queue-panel" aria-label="Moderation cases">
+          <form id="manual-case-form" class="manual-case">
+            <label>Open case for place ID<input name="place_id" placeholder="plc_…" required></label>
+            <button class="secondary full" type="submit">Open manual case</button>
+          </form>
+          <div class="queue-controls"><label>State<select id="queue-state"><option value="open">Open</option><option value="resolved">Resolved</option></select></label><span id="queue-count"></span></div>
+          <div id="queue-list" class="queue-list"></div>
+          <button id="next-page" class="secondary full" type="button" hidden>Load more</button>
+        </aside>
+        <section id="detail" class="detail-panel" aria-label="Case detail"><div class="empty">Select a case to inspect its source and history.</div></section>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

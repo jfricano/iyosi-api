@@ -18,7 +18,7 @@ The [operations runbook](docs/OPERATIONS.md) covers the immutable pilot image, C
 
 ## Current state
 
-This repository contains the FastAPI v1 server, PostGIS migration, NCR boundary seed, generated [OpenAPI contract](docs/openapi.json), and contract/integration tests. The Android pilot client and SwiftUI iOS client live in separate repositories. The admin web UI is not yet implemented. The API is platform neutral.
+This repository contains the FastAPI v1 server, PostGIS migration, NCR boundary seed, generated [OpenAPI contract](docs/openapi.json), an internal [moderation console](docs/ADMIN_OPERATIONS.md), and contract/integration tests. The Android pilot client and SwiftUI iOS client live in separate repositories. The API is platform neutral.
 
 ## Local API
 
@@ -35,6 +35,8 @@ Compose applies SQL migrations and seeds the committed NCR boundary on first sta
 For iOS development with populated but fictional records and working local address suggestions, start the [isolated demo stack](docs/DEMO_DATA.md) on port 8001. It uses a separate database and never seeds the normal pilot API.
 
 Create an adult account through `/v1/auth/register` and promote a trusted operator account with `docker compose exec workspace python scripts/grant_admin.py EMAIL`. Do this only in a private pilot environment. All moderation decisions then go through the API so they are audited.
+
+Operators can sign in to the [moderation console](docs/ADMIN_OPERATIONS.md) at `http://localhost:8000/admin` for local development. It supports the queue, private evidence review, all decision actions, and version-conflict recovery.
 
 ## Tests
 
