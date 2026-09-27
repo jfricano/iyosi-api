@@ -11,6 +11,8 @@ The [pilot Compose file](../compose.pilot.yaml) runs one immutable API container
 
 The health endpoint checks DB connectivity and the NCR boundary. Poll it from outside the host over HTTPS every minute and alert the named operator after three consecutive failures. Also alert on unavailable DB/container, disk utilization over 80%, failed backup or restore drill, and moderation queue age beyond the pilot response target. Correlate incident reports by the `X-Request-ID` response header; do not log tokens, passwords, private evidence, or full request bodies. Set a short, explicit log retention period with the host operator.
 
+The [performance baseline and pilot targets](PERFORMANCE.md) describe the queue-age gauge, privacy-safe request timing events, provider-failure events, and the reproducible 5,000-place spatial benchmark.
+
 ## Backup and tested restore
 
 The dump contains account information and private moderation evidence. Store it encrypted off-host with access limited to the service owner. A local dump alone is not a backup. Schedule a daily dump, off-host transfer, and daily `verify_restore.sh` run; retain at least seven daily copies and one monthly copy until the pilot retention policy is approved. Check available disk before a restore drill.

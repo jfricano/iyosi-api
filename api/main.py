@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import os
+import time
 from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -19,7 +20,7 @@ from .core import account, admin, auth_configured, check_rate, client_bucket, cu
 from .schemas import Ack, AddressSuggestions, ConfirmationIn, ConfirmationPage, DecisionAck, DecisionIn, Error, Kind, Login, Me, Place, PlacePage, PublicReview, Register, ReportIn, ReviewIn, ReviewPage, Status, SubmissionIn, SubmissionList, Token
 
 app = FastAPI(title='iYosi API', version='1.0.0', description='Platform-neutral Metro Manila pilot API. Self-attested adult access is suitable only for a private pilot.', responses={400:{'model':Error},401:{'model':Error},403:{'model':Error},404:{'model':Error},409:{'model':Error},422:{'model':Error},429:{'model':Error},503:{'model':Error}})
-logger = logging.getLogger('iyosi.api')
+operations_log = logging.getLogger('uvicorn.error')
 ADMIN_DIR = Path(__file__).resolve().parent.parent / 'admin'
 app.mount('/admin/assets', StaticFiles(directory=ADMIN_DIR / 'assets'), name='admin-assets')
 
@@ -36,9 +37,18 @@ def admin_page():
 async def request_id(request: Request, call_next):
     rid = str(uuid4())
     request.state.request_id = rid
-    response = await call_next(request)
-    response.headers['X-Request-ID'] = rid
-    return response
+    started = time.perf_counter()
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        response.headers['X-Request-ID'] = rid
+        return response
+    finally:
+        route = request.scope.get('route')
+        operations_log.info(json.dumps({'event':'request_complete','request_id':rid,
+            'method':request.method,'route':getattr(route,'path','unmatched'),
+            'status':status,'duration_ms':round((time.perf_counter()-started)*1000,1)}))
 
 @app.exception_handler(HTTPException)
 async def http_error(request: Request, exc: HTTPException):
@@ -53,7 +63,7 @@ async def validation_error(request: Request, exc: RequestValidationError):
 @app.exception_handler(Exception)
 async def unexpected_error(request: Request, exc: Exception):
     rid=getattr(request.state,'request_id',str(uuid4()))
-    logger.error('Unhandled API failure request_id=%s path=%s error_type=%s',rid,request.url.path,type(exc).__name__)
+    operations_log.error('Unhandled API failure request_id=%s route=%s error_type=%s',rid,getattr(request.scope.get('route'),'path','unmatched'),type(exc).__name__)
     return JSONResponse(status_code=500,content={'code':'internal_error','message':'Request failed; try again later','request_id':rid},headers={'X-Request-ID':rid})
 
 @app.get('/health')
@@ -204,7 +214,9 @@ def confirmations(place_id: str, cursor: str | None=None, limit: int=Query(20,ge
 def suggestions(request: Request, q: str=Query(min_length=3,max_length=100)):
     api_key=os.environ.get('GEOAPIFY_API_KEY')
     provider='https://api.geoapify.com/v1/geocode/autocomplete' if api_key else os.environ.get('GEOCODER_URL')
-    if not provider: fail(503,'geocoder_unavailable','Address search is not configured')
+    if not provider:
+        operations_log.warning(json.dumps({'event':'geocoder_failure','reason':'not_configured','request_id':request.state.request_id}))
+        fail(503,'geocoder_unavailable','Address search is not configured')
     with db() as conn: check_rate(conn,client_bucket(request,'search'),30,3600)
     try:
         params={'text':q,'limit':5,'format':'geojson','filter':'countrycode:ph','bias':'rect:120.90,14.35,121.20,14.85'} if api_key else {'q':q,'limit':5}
@@ -226,7 +238,10 @@ def suggestions(request: Request, q: str=Query(min_length=3,max_length=100)):
                 if within_ncr(conn,lon,lat):
                     items.append({'label':label,'location':{'lat':lat,'lon':lon}})
         return {'items':items,'provider':'geoapify' if api_key else None}
-    except (httpx.HTTPError,ValueError,KeyError,TypeError,AttributeError,IndexError):
+    except (httpx.HTTPError,ValueError,KeyError,TypeError,AttributeError,IndexError) as exc:
+        operations_log.warning(json.dumps({'event':'geocoder_failure','reason':type(exc).__name__,
+            'provider_status':exc.response.status_code if isinstance(exc,httpx.HTTPStatusError) else None,
+            'request_id':request.state.request_id}))
         fail(503,'geocoder_unavailable','Address search is temporarily unavailable')
 
 @app.post('/v1/place-submissions',response_model=Ack,status_code=201)
