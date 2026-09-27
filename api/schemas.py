@@ -161,6 +161,7 @@ class AddressSuggestion(Strict):
 
 class AddressSuggestions(Strict):
     items: list[AddressSuggestion]
+    provider: Literal['geoapify'] | None = None
 
 class Me(Strict):
     id: str

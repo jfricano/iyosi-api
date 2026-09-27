@@ -1,0 +1,9 @@
+# Address search adapter
+
+The private-pilot default is Geoapify Address Autocomplete. Create a Geoapify project, put its key in the server-side `GEOAPIFY_API_KEY` secret, and leave the key out of the iOS app and URLs. When this setting is present, the API calls Geoapify with `x-api-key`, a Philippines country filter, an NCR ranking bias, a five-result limit, and GeoJSON format. It then checks each point against the committed NCR boundary before returning it. The iOS search list displays links to Geoapify and OpenStreetMap attribution when this provider is used. The key takes precedence over `GEOCODER_URL`.
+
+The isolated synthetic demo stack uses `GEOCODER_URL` to call its local GeoJSON fixture provider. Other compatible test providers can use that setting; they must accept `q` and `limit` and return a GeoJSON FeatureCollection of Point features. The API returns `503 geocoder_unavailable` when no provider is configured or a provider fails. It discards malformed and out-of-bound points. Provider secrets and raw failures are not returned to clients.
+
+Geoapify's published Free plan currently allows 3,000 credits a day without a credit card and permits limited commercial use. A suggestion request costs one credit. The free plan requires Geoapify attribution and OpenStreetMap attribution. The public OSMF Nominatim server is unsuitable for this interactive autocomplete flow because its usage policy forbids autocomplete. Review the current provider plan and terms before connecting real users; set a project quota, and monitor failures and usage.
+
+Sources: [Geoapify pricing](https://www.geoapify.com/pricing/), [Geoapify autocomplete docs](https://apidocs.geoapify.com/how-to/addresses/add-address-autocomplete/), [Geoapify terms](https://www.geoapify.com/terms-and-conditions/), [OSMF Nominatim usage policy](https://operations.osmfoundation.org/policies/nominatim/).

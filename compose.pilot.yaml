@@ -17,6 +17,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-iyosi}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-iyosi}
       IYOSI_SECRET: ${IYOSI_SECRET:?Set IYOSI_SECRET}
       GEOCODER_URL: ${GEOCODER_URL:-}
+      GEOAPIFY_API_KEY: ${GEOAPIFY_API_KEY:-}
     depends_on:
       db:
         condition: service_healthy

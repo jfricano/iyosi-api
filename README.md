@@ -30,7 +30,7 @@ docker compose up -d --build
 curl http://localhost:8000/health
 ```
 
-Compose applies SQL migrations and seeds the committed NCR boundary on first start. The API documentation is at `http://localhost:8000/docs`; machine-readable OpenAPI is at `http://localhost:8000/openapi.json` or [docs/openapi.json](docs/openapi.json). The database remains private to Compose. `GEOCODER_URL` is optional and must point to a compatible GeoJSON feature-search endpoint before `/v1/address-suggestions` works; see [API resource model](docs/API_RESOURCE_MODEL.md).
+Compose applies SQL migrations and seeds the committed NCR boundary on first start. The API documentation is at `http://localhost:8000/docs`; machine-readable OpenAPI is at `http://localhost:8000/openapi.json` or [docs/openapi.json](docs/openapi.json). The database remains private to Compose. Set a server-side `GEOAPIFY_API_KEY` for hosted address autocomplete, or `GEOCODER_URL` for a compatible GeoJSON test endpoint; see [address search adapter](docs/GEOCODER.md).
 
 For iOS development with populated but fictional records and working local address suggestions, start the [isolated demo stack](docs/DEMO_DATA.md) on port 8001. It uses a separate database and never seeds the normal pilot API.
 

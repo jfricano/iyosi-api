@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -186,22 +187,31 @@ def confirmations(place_id: str, cursor: str | None=None, limit: int=Query(20,ge
 
 @app.get('/v1/address-suggestions',response_model=AddressSuggestions)
 def suggestions(request: Request, q: str=Query(min_length=3,max_length=100)):
-    provider=os.environ.get('GEOCODER_URL')
+    api_key=os.environ.get('GEOAPIFY_API_KEY')
+    provider='https://api.geoapify.com/v1/geocode/autocomplete' if api_key else os.environ.get('GEOCODER_URL')
     if not provider: fail(503,'geocoder_unavailable','Address search is not configured')
     with db() as conn: check_rate(conn,client_bucket(request,'search'),30,3600)
     try:
-        response=httpx.get(provider,params={'q':q,'limit':5},timeout=3)
+        params={'text':q,'limit':5,'format':'geojson','filter':'countrycode:ph','bias':'rect:120.90,14.35,121.20,14.85'} if api_key else {'q':q,'limit':5}
+        response=httpx.get(provider,params=params,headers={'x-api-key':api_key} if api_key else None,timeout=3)
         response.raise_for_status()
         payload=response.json()
-        features=payload.get('features',[])
+        features=payload['features']
+        if not isinstance(features,list): raise ValueError('Invalid geocoder features')
         items=[]
-        for f in features[:5]:
+        with db() as conn:
+          for f in features[:5]:
+            if f.get('geometry',{}).get('type')!='Point': continue
             lon,lat=f['geometry']['coordinates'][:2]
-            with db() as conn:
+            if not isinstance(lon,(int,float)) or not isinstance(lat,(int,float)) or not math.isfinite(lon) or not math.isfinite(lat) or not (-180<=lon<=180 and -90<=lat<=90): continue
+            properties=f.get('properties') or {}
+            if not isinstance(properties,dict): continue
+            label=str(properties.get('formatted') or properties.get('name') or properties.get('label') or q).strip()[:240]
+            if label:
                 if within_ncr(conn,lon,lat):
-                    items.append({'label':str(f['properties'].get('name') or f['properties'].get('label') or q)[:240],'location':{'lat':lat,'lon':lon}})
-        return {'items':items}
-    except (httpx.HTTPError,ValueError,KeyError,TypeError):
+                    items.append({'label':label,'location':{'lat':lat,'lon':lon}})
+        return {'items':items,'provider':'geoapify' if api_key else None}
+    except (httpx.HTTPError,ValueError,KeyError,TypeError,AttributeError,IndexError):
         fail(503,'geocoder_unavailable','Address search is temporarily unavailable')
 
 @app.post('/v1/place-submissions',response_model=Ack,status_code=201)

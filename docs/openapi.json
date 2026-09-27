@@ -2763,6 +2763,18 @@
             },
             "type": "array",
             "title": "Items"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "geoapify"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
           }
         },
         "additionalProperties": false,

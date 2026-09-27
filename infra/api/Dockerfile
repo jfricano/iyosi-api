@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && useradd --system --uid 10001 --home /app iyosi
 
 COPY --chown=iyosi:iyosi api /app/api
+COPY --chown=iyosi:iyosi admin /app/admin
 COPY --chown=iyosi:iyosi scripts /app/scripts
 COPY --chown=iyosi:iyosi migrations /app/migrations
 COPY --chown=iyosi:iyosi infra/db/ncr_boundary.geojson /app/infra/db/ncr_boundary.geojson
