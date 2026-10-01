@@ -15,6 +15,7 @@ Read the [product brief](docs/PRODUCT_BRIEF.md) for the full story, experience, 
 The [backend v1 delivery record](docs/BACKEND_V1_DELIVERY.md) summarizes what is implemented and verified, with remaining hosted-pilot gates. The [implementation plan](docs/BACKEND_EXECUTIVE_PLAN.md), [sprint backlog](docs/BACKEND_SPRINT_PLAN.md), and [test map](docs/BACKEND_TEST_MAP.md) retain the decision trail.
 
 The [operations runbook](docs/OPERATIONS.md) covers the immutable pilot image, CI, daily cleanup, backup/restore drills, and hosting decisions.
+The [shared-host contract](docs/SHARED_HOST_CONTRACT.md) describes the ARM64 one-shot migration and private PostGIS integration candidate for the coordinated Oracle/VM assessment.
 
 ## Current state
 
