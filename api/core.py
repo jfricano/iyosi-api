@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import secrets
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool, PoolTimeout
 from fastapi import Depends, Header, HTTPException, Request
 
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://iyosi:local-development-only@localhost:5432/iyosi')
@@ -20,10 +22,38 @@ SECRET = os.environ.get('IYOSI_SECRET', '')
 def uid(prefix: str) -> str:
     return prefix + '_' + secrets.token_hex(12)
 
+POOL_MAX = int(os.environ.get('IYOSI_DB_POOL_MAX', '10'))
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
+
+def _get_pool() -> ConnectionPool:
+    # Opened lazily so imports (OpenAPI export, tests that repoint DATABASE_URL) never connect.
+    global _pool
+    with _pool_lock:
+        if _pool is not None and _pool.conninfo != DATABASE_URL:
+            _pool.close()
+            _pool = None
+        if _pool is None:
+            _pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=POOL_MAX, timeout=10,
+                                   kwargs={'row_factory': dict_row}, check=ConnectionPool.check_connection,
+                                   name='iyosi', open=True)
+        return _pool
+
+def close_pool():
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.close()
+            _pool = None
+
 @contextmanager
 def db():
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
-        yield conn
+    # Same transaction semantics as psycopg.connect(): commit on success, roll back on error.
+    try:
+        with _get_pool().connection() as conn:
+            yield conn
+    except PoolTimeout:
+        fail(503, 'database_busy', 'Service is busy; try again shortly')
 
 def fail(status: int, code: str, message: str):
     raise HTTPException(status, detail={'code': code, 'message': message})

@@ -16,12 +16,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from psycopg.errors import UniqueViolation
 
-from .core import account, admin, auth_configured, check_rate, client_bucket, cursor_decode, cursor_encode, db, fail, hash_password, idempotent_lookup, idempotent_store, keyset_decode, keyset_encode, password_valid, point, token_body, uid, utcnow, within_ncr
+from .core import account, admin, auth_configured, check_rate, client_bucket, close_pool, cursor_decode, cursor_encode, db, fail, hash_password, idempotent_lookup, idempotent_store, keyset_decode, keyset_encode, password_valid, point, token_body, uid, utcnow, within_ncr
 from .schemas import Ack, AddressSuggestions, ConfirmationIn, ConfirmationPage, DecisionAck, DecisionIn, Error, Kind, Login, Me, Place, PlacePage, PublicReview, Register, ReportIn, ReviewIn, ReviewPage, Status, SubmissionIn, SubmissionList, Token
 
 app = FastAPI(title='iYosi API', version='1.0.0', description='Platform-neutral Metro Manila pilot API. Self-attested adult access is suitable only for a private pilot.', responses={400:{'model':Error},401:{'model':Error},403:{'model':Error},404:{'model':Error},409:{'model':Error},422:{'model':Error},429:{'model':Error},503:{'model':Error}})
 operations_log = logging.getLogger('uvicorn.error')
 ADMIN_DIR = Path(__file__).resolve().parent.parent / 'admin'
+app.add_event_handler('shutdown', close_pool)
 app.mount('/admin/assets', StaticFiles(directory=ADMIN_DIR / 'assets'), name='admin-assets')
 
 @app.get('/admin', include_in_schema=False)

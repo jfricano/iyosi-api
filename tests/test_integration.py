@@ -532,3 +532,20 @@ def test_token_response_reports_expiry(client):
     expires=datetime.fromisoformat(response.json()['expires_at'].replace('Z','+00:00'))
     assert timedelta(hours=23,minutes=59)<expires-datetime.now(timezone.utc)<=timedelta(hours=24)
     assert client.post('/v1/auth/token',json={'email':'x@example.com','password':'p'*129}).status_code==422
+
+
+def test_database_connections_are_reused_and_rolled_back(client):
+    backends=set()
+    for _ in range(3*core.POOL_MAX):
+        with core.db() as conn:
+            backends.add(conn.execute('SELECT pg_backend_pid() AS pid').fetchone()['pid'])
+    assert len(backends)<=core.POOL_MAX
+    first=min(backends)
+    from fastapi import HTTPException
+    marker='pool-rollback-'+str(first)
+    with pytest.raises(HTTPException):
+        with core.db() as conn:
+            conn.execute("INSERT INTO rate_buckets(bucket,count,expires_at) VALUES (%s,1,now()+interval '1 hour')",(marker,))
+            core.fail(409,'test','roll back')
+    with core.db() as conn:
+        assert conn.execute('SELECT 1 FROM rate_buckets WHERE bucket=%s',(marker,)).fetchone() is None
