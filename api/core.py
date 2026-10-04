@@ -5,6 +5,7 @@ import hmac
 import json
 import os
 import secrets
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool, PoolTimeout
 from fastapi import Depends, Header, HTTPException, Request
 
 DATABASE_URL = os.environ.get('DATABASE_URL', 'postgresql://iyosi:local-development-only@localhost:5432/iyosi')
@@ -20,10 +22,38 @@ SECRET = os.environ.get('IYOSI_SECRET', '')
 def uid(prefix: str) -> str:
     return prefix + '_' + secrets.token_hex(12)
 
+POOL_MAX = int(os.environ.get('IYOSI_DB_POOL_MAX', '10'))
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
+
+def _get_pool() -> ConnectionPool:
+    # Opened lazily so imports (OpenAPI export, tests that repoint DATABASE_URL) never connect.
+    global _pool
+    with _pool_lock:
+        if _pool is not None and _pool.conninfo != DATABASE_URL:
+            _pool.close()
+            _pool = None
+        if _pool is None:
+            _pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=POOL_MAX, timeout=10,
+                                   kwargs={'row_factory': dict_row}, check=ConnectionPool.check_connection,
+                                   name='iyosi', open=True)
+        return _pool
+
+def close_pool():
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            _pool.close()
+            _pool = None
+
 @contextmanager
 def db():
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
-        yield conn
+    # Same transaction semantics as psycopg.connect(): commit on success, roll back on error.
+    try:
+        with _get_pool().connection() as conn:
+            yield conn
+    except PoolTimeout:
+        fail(503, 'database_busy', 'Service is busy; try again shortly')
 
 def fail(status: int, code: str, message: str):
     raise HTTPException(status, detail={'code': code, 'message': message})
@@ -35,11 +65,18 @@ def auth_configured():
     if len(SECRET) < 32:
         fail(503, 'auth_unavailable', 'Authentication is not configured')
 
-def sign(account_id: str) -> str:
+TOKEN_TTL_SECONDS = 86400
+
+def sign(account_id: str, exp: int | None = None) -> str:
     auth_configured()
-    payload = base64.urlsafe_b64encode(json.dumps({'sub': account_id, 'exp': int(time.time()) + 86400}, separators=(',', ':')).encode()).decode().rstrip('=')
+    exp = exp if exp is not None else int(time.time()) + TOKEN_TTL_SECONDS
+    payload = base64.urlsafe_b64encode(json.dumps({'sub': account_id, 'exp': exp}, separators=(',', ':')).encode()).decode().rstrip('=')
     mac = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return payload + '.' + mac
+
+def token_body(account_id: str) -> dict:
+    exp = int(time.time()) + TOKEN_TTL_SECONDS
+    return {'access_token': sign(account_id, exp), 'token_type': 'bearer', 'expires_at': datetime.fromtimestamp(exp, timezone.utc)}
 
 def account(authorization: str | None = Header(default=None)) -> dict:
     auth_configured()
@@ -123,6 +160,23 @@ def cursor_decode(value: str | None):
             raise ValueError()
         return decoded
     except (ValueError, UnicodeDecodeError, binascii.Error):
+        fail(400, 'invalid_cursor', 'Invalid cursor')
+
+def keyset_encode(at: datetime, item_id: str):
+    return cursor_encode(at.isoformat() + '|' + item_id)
+
+def keyset_decode(value: str | None):
+    # Newest-first pages resume after (timestamp, id); an empty cursor starts at the top.
+    decoded = cursor_decode(value)
+    if not decoded:
+        return None
+    try:
+        at, item_id = decoded.rsplit('|', 1)
+        parsed = datetime.fromisoformat(at)
+        if parsed.tzinfo is None or not item_id:
+            raise ValueError()
+        return parsed, item_id
+    except ValueError:
         fail(400, 'invalid_cursor', 'Invalid cursor')
 
 def point(lon, lat):

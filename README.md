@@ -37,6 +37,8 @@ For iOS development with populated but fictional records and working local addre
 
 Create an adult account through `/v1/auth/register` and promote a trusted operator account with `docker compose exec workspace python scripts/grant_admin.py EMAIL`. Do this only in a private pilot environment. All moderation decisions then go through the API so they are audited.
 
+The October 2026 API review, its decisions, open items and dev-mode test steps are in [docs/API_REVIEW_2026_10.md](docs/API_REVIEW_2026_10.md).
+
 Operators can sign in to the [moderation console](docs/ADMIN_OPERATIONS.md) at `http://localhost:8000/admin` for local development. It supports the queue, private evidence review, all decision actions, and version-conflict recovery.
 
 ## Tests

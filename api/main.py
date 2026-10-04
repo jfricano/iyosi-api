@@ -16,12 +16,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from psycopg.errors import UniqueViolation
 
-from .core import account, admin, auth_configured, check_rate, client_bucket, cursor_decode, cursor_encode, db, fail, hash_password, idempotent_lookup, idempotent_store, password_valid, point, sign, uid, utcnow, within_ncr
+from .core import account, admin, auth_configured, check_rate, client_bucket, close_pool, cursor_decode, cursor_encode, db, fail, hash_password, idempotent_lookup, idempotent_store, keyset_decode, keyset_encode, password_valid, point, token_body, uid, utcnow, within_ncr
 from .schemas import Ack, AddressSuggestions, ConfirmationIn, ConfirmationPage, DecisionAck, DecisionIn, Error, Kind, Login, Me, Place, PlacePage, PublicReview, Register, ReportIn, ReviewIn, ReviewPage, Status, SubmissionIn, SubmissionList, Token
 
 app = FastAPI(title='iYosi API', version='1.0.0', description='Platform-neutral Metro Manila pilot API. Self-attested adult access is suitable only for a private pilot.', responses={400:{'model':Error},401:{'model':Error},403:{'model':Error},404:{'model':Error},409:{'model':Error},422:{'model':Error},429:{'model':Error},503:{'model':Error}})
 operations_log = logging.getLogger('uvicorn.error')
 ADMIN_DIR = Path(__file__).resolve().parent.parent / 'admin'
+app.add_event_handler('shutdown', close_pool)
 app.mount('/admin/assets', StaticFiles(directory=ADMIN_DIR / 'assets'), name='admin-assets')
 
 @app.get('/admin', include_in_schema=False)
@@ -92,7 +93,7 @@ def register(data: Register, request: Request):
             conn.execute('INSERT INTO accounts(id,email,password_hash,adult_attested_at) VALUES (%s,%s,%s,now())',(account_id,email,hash_password(data.password)))
         except UniqueViolation:
             fail(409,'email_exists','Account already exists')
-    return {'access_token':sign(account_id),'token_type':'bearer'}
+    return token_body(account_id)
 
 @app.post('/v1/auth/token', response_model=Token)
 def login(data: Login, request: Request):
@@ -101,7 +102,7 @@ def login(data: Login, request: Request):
         row=conn.execute('SELECT id,password_hash FROM accounts WHERE email=%s AND disabled_at IS NULL',(data.email.strip().lower(),)).fetchone()
     if not row or not password_valid(data.password,row['password_hash']):
         fail(401,'invalid_credentials','Invalid email or password')
-    return {'access_token':sign(row['id']),'token_type':'bearer'}
+    return token_body(row['id'])
 
 @app.get('/v1/me',response_model=Me)
 def me(user=Depends(account)):
@@ -194,21 +195,37 @@ def visible_place(conn, place_id):
 
 @app.get('/v1/places/{place_id}/reviews',response_model=ReviewPage)
 def reviews(place_id: str, cursor: str | None=None, limit: int=Query(20,ge=1,le=50)):
-    after=cursor_decode(cursor)
+    after=keyset_decode(cursor)
+    sql="SELECT id,stars,body,created_at,updated_at FROM reviews WHERE place_id=%s AND hidden_at IS NULL AND deleted_at IS NULL"
+    params=[place_id]
+    if after: sql+=' AND (created_at,id)<(%s,%s)'; params.extend(after)
+    sql+=' ORDER BY created_at DESC,id DESC LIMIT %s'; params.append(limit+1)
     with db() as conn:
         visible_place(conn,place_id)
-        rows=conn.execute("SELECT id,stars,body,created_at,updated_at FROM reviews WHERE place_id=%s AND hidden_at IS NULL AND deleted_at IS NULL AND id>%s ORDER BY id LIMIT %s",(place_id,after,limit+1)).fetchall()
+        rows=conn.execute(sql,params).fetchall()
     more=len(rows)>limit; rows=rows[:limit]
-    return {'items':rows,'next_cursor':cursor_encode(rows[-1]['id']) if more else None}
+    return {'items':rows,'next_cursor':keyset_encode(rows[-1]['created_at'],rows[-1]['id']) if more else None}
+
+@app.get('/v1/places/{place_id}/reviews/me',response_model=PublicReview)
+def my_review(place_id: str, user=Depends(account)):
+    # The author still sees a review a moderator hid, so they can revise or delete it.
+    with db() as conn:
+        row=conn.execute('SELECT id,stars,body,created_at,updated_at FROM reviews WHERE place_id=%s AND account_id=%s AND deleted_at IS NULL',(place_id,user['id'])).fetchone()
+    if not row: fail(404,'not_found','Review unavailable')
+    return row
 
 @app.get('/v1/places/{place_id}/confirmations',response_model=ConfirmationPage)
 def confirmations(place_id: str, cursor: str | None=None, limit: int=Query(20,ge=1,le=50)):
-    after=cursor_decode(cursor)
+    after=keyset_decode(cursor)
+    sql="SELECT id,observation,observed_at,created_at FROM confirmations WHERE place_id=%s AND hidden_at IS NULL"
+    params=[place_id]
+    if after: sql+=' AND (observed_at,id)<(%s,%s)'; params.extend(after)
+    sql+=' ORDER BY observed_at DESC,id DESC LIMIT %s'; params.append(limit+1)
     with db() as conn:
         visible_place(conn,place_id)
-        rows=conn.execute("SELECT id,observation,observed_at,created_at FROM confirmations WHERE place_id=%s AND hidden_at IS NULL AND id>%s ORDER BY id LIMIT %s",(place_id,after,limit+1)).fetchall()
+        rows=conn.execute(sql,params).fetchall()
     more=len(rows)>limit; rows=rows[:limit]
-    return {'items':rows,'next_cursor':cursor_encode(rows[-1]['id']) if more else None}
+    return {'items':rows,'next_cursor':keyset_encode(rows[-1]['observed_at'],rows[-1]['id']) if more else None}
 
 @app.get('/v1/address-suggestions',response_model=AddressSuggestions)
 def suggestions(request: Request, q: str=Query(min_length=3,max_length=100)):
@@ -273,7 +290,9 @@ def my_submissions(user=Depends(account)):
 @app.post('/v1/places/{place_id}/confirmations',response_model=Ack,status_code=201)
 def confirm(place_id: str, data: ConfirmationIn, key: str | None=Header(default=None,alias='Idempotency-Key'), user=Depends(account)):
     now=utcnow()
-    if data.observed_at.tzinfo is None or data.observed_at>now+timedelta(minutes=5) or data.observed_at<now-timedelta(days=30): fail(422,'invalid_observed_at','Observation must be within the last 30 days')
+    if data.observed_at.tzinfo is None: fail(422,'invalid_observed_at','observed_at must include a time zone')
+    # A few minutes of slack so a client picking "30 days ago" is not rejected by clock skew or a slow form.
+    if data.observed_at>now+timedelta(minutes=5) or data.observed_at<now-timedelta(days=30,minutes=10): fail(422,'invalid_observed_at','Observation must be within the last 30 days')
     route='confirm:'+place_id
     with db() as conn:
         digest,prior=idempotent_lookup(conn,user['id'],route,key,data.model_dump(mode='json'))
@@ -416,9 +435,30 @@ def decide(case_id: str,data: DecisionIn,user=Depends(admin)):
                     conn.execute("INSERT INTO places(id,name,kind,advisory_status,location,access_point,address_label,access_notes,inside_venue,verification_reviewed_at,verification_public_source,verification_evidence) SELECT %s,name,kind,%s,location,access_point,address_label,access_notes,inside_venue,%s,%s,%s FROM place_submissions WHERE id=%s",(place_id,status,data.reviewed_at if status=='verified_designated' else None,data.public_source if status=='verified_designated' else None,(data.evidence_type+': '+data.evidence) if status=='verified_designated' else None,source_id))
                 else:
                     place_id=sub['place_id']
-                    row=conn.execute('SELECT version FROM places WHERE id=%s FOR UPDATE',(place_id,)).fetchone()
+                    row=conn.execute('SELECT version,publication_state,advisory_status,ST_Distance(location::geography,%s::geometry::geography) AS moved_m FROM places WHERE id=%s FOR UPDATE',(sub['location'],place_id)).fetchone()
+                    if row['publication_state']!='published': fail(422,'invalid_action','Corrections apply only to a published place')
                     if data.expected_version is None or row['version']!=data.expected_version: fail(409,'version_conflict','Place version changed')
-                    conn.execute("UPDATE places SET name=%s,kind=%s,location=%s,access_point=%s,address_label=%s,access_notes=%s,inside_venue=%s,advisory_status=%s,verification_reviewed_at=%s,verification_public_source=%s,verification_evidence=%s,version=version+1,updated_at=now() WHERE id=%s",(sub['name'],sub['kind'],sub['location'],sub['access_point'],sub['address_label'],sub['access_notes'],sub['inside_venue'],status,data.reviewed_at if status=='verified_designated' else None,data.public_source if status=='verified_designated' else None,(data.evidence_type+': '+data.evidence) if status=='verified_designated' else None,place_id))
+                    # A correction changes what the contributor filled in. Blank optional fields keep the
+                    # current value, and the current status (with its evidence) stays unless the moderator
+                    # sets one or the place stops being a designated kind or moves more than 50 m.
+                    keep_evidence=False
+                    if data.advisory_status: status=data.advisory_status
+                    elif row['advisory_status']=='verified_designated' and (sub['kind'] not in ('public_designated','venue_designated') or row['moved_m']>50): status='community_reported'
+                    else:
+                        status=row['advisory_status']; keep_evidence=status=='verified_designated'
+                    fresh=status=='verified_designated' and not keep_evidence
+                    conn.execute("""UPDATE places SET name=%(name)s,kind=%(kind)s,location=%(location)s::geometry,
+                        access_point=COALESCE(%(access_point)s::geometry,access_point),address_label=COALESCE(%(address_label)s::text,address_label),
+                        access_notes=COALESCE(%(access_notes)s::text,access_notes),inside_venue=COALESCE(%(inside_venue)s::boolean,inside_venue),
+                        advisory_status=%(status)s,
+                        verification_reviewed_at=CASE WHEN %(keep)s THEN verification_reviewed_at ELSE %(reviewed_at)s::timestamptz END,
+                        verification_public_source=CASE WHEN %(keep)s THEN verification_public_source ELSE %(public_source)s::text END,
+                        verification_evidence=CASE WHEN %(keep)s THEN verification_evidence ELSE %(evidence)s::text END,
+                        version=version+1,updated_at=now() WHERE id=%(id)s""",
+                        {'name':sub['name'],'kind':sub['kind'],'location':sub['location'],'access_point':sub['access_point'],'address_label':sub['address_label'],
+                         'access_notes':sub['access_notes'],'inside_venue':sub['inside_venue'],'status':status,'keep':keep_evidence,
+                         'reviewed_at':data.reviewed_at if fresh else None,'public_source':data.public_source if fresh else None,
+                         'evidence':(data.evidence_type+': '+data.evidence) if fresh else None,'id':place_id})
                 conn.execute("UPDATE place_submissions SET state='published',place_id=%s,decision_reason=%s,decided_at=now() WHERE id=%s",(place_id,data.reason,source_id))
             else: fail(422,'invalid_action','Action is not valid for a submission')
             new=snapshot(conn.execute('SELECT * FROM place_submissions WHERE id=%s',(source_id,)).fetchone())
@@ -443,7 +483,15 @@ def decide(case_id: str,data: DecisionIn,user=Depends(admin)):
                 old=snapshot(conn.execute('SELECT * FROM accounts WHERE id=%s',(target_id,)).fetchone()); old.pop('email',None)
                 conn.execute("UPDATE accounts SET email=id || '@deleted.invalid',password_hash='deleted',disabled_at=now() WHERE id=%s",(target_id,))
                 conn.execute("UPDATE deletion_requests SET state='completed' WHERE id=%s",(source_id,))
+                # Remove the person's own words. Published places stay because others rely on them.
+                removed={
+                    'reviews':conn.execute('UPDATE reviews SET body=NULL,deleted_at=COALESCE(deleted_at,now()),updated_at=now() WHERE account_id=%s',(target_id,)).rowcount,
+                    'submissions':conn.execute("UPDATE place_submissions SET basis='',address_label=NULL,access_notes=NULL WHERE account_id=%s",(target_id,)).rowcount,
+                    'confirmations':conn.execute('UPDATE confirmations SET access_note_suggestion=NULL WHERE account_id=%s',(target_id,)).rowcount,
+                    'reports':conn.execute('UPDATE reports SET detail=NULL WHERE account_id=%s',(target_id,)).rowcount,
+                }
                 new=snapshot(conn.execute('SELECT * FROM accounts WHERE id=%s',(target_id,)).fetchone())
+                new['content_removed']=removed
                 place_id=None; review_id=None
             else: fail(422,'invalid_case','Unsupported case source')
             if place_id:

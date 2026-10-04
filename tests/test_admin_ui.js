@@ -16,6 +16,7 @@ const form = (values) => ({ get: (key) => values[key] ?? "" });
 const correction = { case: { source_type: "submission", state: "open" }, source: { intent: "correct" }, context: { place: { version: 7 } } };
 assert.equal(JSON.stringify(actionsFor(correction)), JSON.stringify(["publish", "reject"]));
 assert.equal(buildDecision(form({ action: "publish", reason: "Reviewed evidence", advisory_status: "community_reported" }), correction).expected_version, 7);
+assert.equal("advisory_status" in buildDecision(form({ action: "publish", reason: "Kept current status" }), correction), false);
 
 const reviewReport = { case: { source_type: "report", state: "open" }, source: { target_type: "review" }, context: { place: { version: 3 } } };
 assert.equal(JSON.stringify(actionsFor(reviewReport)), JSON.stringify(["resolve", "hide_review", "restore_review"]));
