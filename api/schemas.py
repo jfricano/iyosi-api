@@ -18,12 +18,13 @@ class Register(Strict):
     adult_attested: Literal[True]
 
 class Login(Strict):
-    email: str
-    password: str
+    email: str = Field(max_length=254)
+    password: str = Field(max_length=128)
 
 class Token(Strict):
     access_token: str
     token_type: Literal['bearer'] = 'bearer'
+    expires_at: datetime
 
 class SubmissionIn(Strict):
     intent: Literal['create','correct']

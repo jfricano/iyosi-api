@@ -451,3 +451,84 @@ def test_duplicate_registration_attempts_count_against_limit(client):
         assert response.status_code==409 and response.json()['code']=='email_exists'
     limited=client.post('/v1/auth/register',json=payload)
     assert limited.status_code==429 and limited.json()['code']=='rate_limited'
+
+
+def test_own_review_newest_first_pages_and_observation_tolerance(client):
+    from datetime import timedelta
+    _,author=fixture_account()
+    _,admin_headers=fixture_account('admin')
+    place_id=fixture_place(lat=14.68)
+    assert client.get(f'/v1/places/{place_id}/reviews/me',headers=author).status_code==404
+    assert client.get(f'/v1/places/{place_id}/reviews/me').status_code==401
+    written=client.put(f'/v1/places/{place_id}/reviews/me',headers=author,json={'stars':5,'body':'Clear signage'})
+    assert written.status_code==200,written.text
+    assert client.get(f'/v1/places/{place_id}/reviews/me',headers=author).json()==written.json()
+    with psycopg.connect(TEST_DB) as conn:
+        conn.execute('UPDATE reviews SET hidden_at=now() WHERE id=%s',(written.json()['id'],))
+    assert client.get(f'/v1/places/{place_id}/reviews/me',headers=author).json()['id']==written.json()['id']
+    assert client.delete(f'/v1/places/{place_id}/reviews/me',headers=author).status_code==204
+    assert client.get(f'/v1/places/{place_id}/reviews/me',headers=author).status_code==404
+
+    now=datetime.now(timezone.utc)
+    ages=[3,1,5,2,4]
+    with psycopg.connect(TEST_DB) as conn:
+        for age in ages:
+            account_id,_=fixture_account()
+            conn.execute("INSERT INTO reviews(id,place_id,account_id,stars,created_at,updated_at) VALUES (%s,%s,%s,4,%s,%s)",
+                         (f'rev_age{age}_{place_id}',place_id,account_id,now-timedelta(days=age),now-timedelta(days=age)))
+            conn.execute("INSERT INTO confirmations(id,place_id,account_id,observation,observed_at) VALUES (%s,%s,%s,'still_there',%s)",
+                         (f'conf_age{age}_{place_id}',place_id,account_id,now-timedelta(days=age)))
+    for resource in ('reviews','confirmations'):
+        seen=[]; cursor=None
+        while True:
+            page=client.get(f'/v1/places/{place_id}/{resource}',params={'limit':2,**({'cursor':cursor} if cursor else {})})
+            assert page.status_code==200,page.text
+            seen+=[item['id'] for item in page.json()['items']]
+            cursor=page.json()['next_cursor']
+            if not cursor: break
+        assert [int(x.split('_')[1][3:]) for x in seen]==sorted(ages),resource
+    assert client.get(f'/v1/places/{place_id}/reviews',params={'cursor':'cGxjX2FiYw'}).json()['code']=='invalid_cursor'
+
+    _,observer=fixture_account()
+    edge=(now-timedelta(days=30,minutes=2)).isoformat()
+    accepted=client.post(f'/v1/places/{place_id}/confirmations',headers={**observer,'Idempotency-Key':'edge-'+place_id},
+                         json={'observation':'still_there','observed_at':edge})
+    assert accepted.status_code==201,accepted.text
+    _,late=fixture_account()
+    too_old=client.post(f'/v1/places/{place_id}/confirmations',headers={**late,'Idempotency-Key':'old-'+place_id},
+                        json={'observation':'still_there','observed_at':(now-timedelta(days=31)).isoformat()})
+    assert too_old.status_code==422 and too_old.json()['code']=='invalid_observed_at'
+    naive=client.post(f'/v1/places/{place_id}/confirmations',headers={**late,'Idempotency-Key':'naive-'+place_id},
+                      json={'observation':'still_there','observed_at':now.replace(tzinfo=None).isoformat()})
+    assert naive.status_code==422 and 'time zone' in naive.json()['message']
+
+
+def test_correction_cannot_publish_onto_merged_place(client):
+    _,contributor=fixture_account()
+    _,admin_headers=fixture_account('admin')
+    duplicate=fixture_place(lat=14.69)
+    canonical=fixture_place(lat=14.695)
+    correction=client.post('/v1/place-submissions',headers={**contributor,'Idempotency-Key':'late-correction-'+duplicate},
+                           json={'intent':'correct','place_id':duplicate,'name':'Renamed pin','kind':'informal_outdoor',
+                                 'location':{'lat':14.69,'lon':121.0},'basis':'Sign was renamed on site'})
+    assert correction.status_code==201,correction.text
+    _,merged=decide_place(client,admin_headers,duplicate,'merge_place',1,canonical_place_id=canonical)
+    assert merged.status_code==201,merged.text
+    cases=client.get('/v1/admin/moderation-cases',params={'limit':100},headers=admin_headers).json()['items']
+    case=next(x for x in cases if x['source_id']==correction.json()['id'])
+    published=client.post(f"/v1/admin/moderation-cases/{case['id']}/decisions",headers=admin_headers,
+                          json={'action':'publish','reason':'Correction looked right','expected_version':2})
+    assert published.status_code==422 and published.json()['code']=='invalid_action'
+    assert client.get(f'/v1/places/{duplicate}').json()['name']=='Test pin'
+
+
+def test_token_response_reports_expiry(client):
+    import secrets
+    from datetime import timedelta
+    with psycopg.connect(TEST_DB) as conn:
+        conn.execute('DELETE FROM rate_buckets')
+    response=client.post('/v1/auth/register',json={'email':f'expiry-{secrets.token_hex(4)}@example.com','password':'long valid password','adult_attested':True})
+    assert response.status_code==201,response.text
+    expires=datetime.fromisoformat(response.json()['expires_at'].replace('Z','+00:00'))
+    assert timedelta(hours=23,minutes=59)<expires-datetime.now(timezone.utc)<=timedelta(hours=24)
+    assert client.post('/v1/auth/token',json={'email':'x@example.com','password':'p'*129}).status_code==422

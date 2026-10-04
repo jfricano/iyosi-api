@@ -35,11 +35,18 @@ def auth_configured():
     if len(SECRET) < 32:
         fail(503, 'auth_unavailable', 'Authentication is not configured')
 
-def sign(account_id: str) -> str:
+TOKEN_TTL_SECONDS = 86400
+
+def sign(account_id: str, exp: int | None = None) -> str:
     auth_configured()
-    payload = base64.urlsafe_b64encode(json.dumps({'sub': account_id, 'exp': int(time.time()) + 86400}, separators=(',', ':')).encode()).decode().rstrip('=')
+    exp = exp if exp is not None else int(time.time()) + TOKEN_TTL_SECONDS
+    payload = base64.urlsafe_b64encode(json.dumps({'sub': account_id, 'exp': exp}, separators=(',', ':')).encode()).decode().rstrip('=')
     mac = hmac.new(SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return payload + '.' + mac
+
+def token_body(account_id: str) -> dict:
+    exp = int(time.time()) + TOKEN_TTL_SECONDS
+    return {'access_token': sign(account_id, exp), 'token_type': 'bearer', 'expires_at': datetime.fromtimestamp(exp, timezone.utc)}
 
 def account(authorization: str | None = Header(default=None)) -> dict:
     auth_configured()
@@ -123,6 +130,23 @@ def cursor_decode(value: str | None):
             raise ValueError()
         return decoded
     except (ValueError, UnicodeDecodeError, binascii.Error):
+        fail(400, 'invalid_cursor', 'Invalid cursor')
+
+def keyset_encode(at: datetime, item_id: str):
+    return cursor_encode(at.isoformat() + '|' + item_id)
+
+def keyset_decode(value: str | None):
+    # Newest-first pages resume after (timestamp, id); an empty cursor starts at the top.
+    decoded = cursor_decode(value)
+    if not decoded:
+        return None
+    try:
+        at, item_id = decoded.rsplit('|', 1)
+        parsed = datetime.fromisoformat(at)
+        if parsed.tzinfo is None or not item_id:
+            raise ValueError()
+        return parsed, item_id
+    except ValueError:
         fail(400, 'invalid_cursor', 'Invalid cursor')
 
 def point(lon, lat):
