@@ -435,10 +435,30 @@ def decide(case_id: str,data: DecisionIn,user=Depends(admin)):
                     conn.execute("INSERT INTO places(id,name,kind,advisory_status,location,access_point,address_label,access_notes,inside_venue,verification_reviewed_at,verification_public_source,verification_evidence) SELECT %s,name,kind,%s,location,access_point,address_label,access_notes,inside_venue,%s,%s,%s FROM place_submissions WHERE id=%s",(place_id,status,data.reviewed_at if status=='verified_designated' else None,data.public_source if status=='verified_designated' else None,(data.evidence_type+': '+data.evidence) if status=='verified_designated' else None,source_id))
                 else:
                     place_id=sub['place_id']
-                    row=conn.execute('SELECT version,publication_state FROM places WHERE id=%s FOR UPDATE',(place_id,)).fetchone()
+                    row=conn.execute('SELECT version,publication_state,advisory_status,ST_Distance(location::geography,%s::geometry::geography) AS moved_m FROM places WHERE id=%s FOR UPDATE',(sub['location'],place_id)).fetchone()
                     if row['publication_state']!='published': fail(422,'invalid_action','Corrections apply only to a published place')
                     if data.expected_version is None or row['version']!=data.expected_version: fail(409,'version_conflict','Place version changed')
-                    conn.execute("UPDATE places SET name=%s,kind=%s,location=%s,access_point=%s,address_label=%s,access_notes=%s,inside_venue=%s,advisory_status=%s,verification_reviewed_at=%s,verification_public_source=%s,verification_evidence=%s,version=version+1,updated_at=now() WHERE id=%s",(sub['name'],sub['kind'],sub['location'],sub['access_point'],sub['address_label'],sub['access_notes'],sub['inside_venue'],status,data.reviewed_at if status=='verified_designated' else None,data.public_source if status=='verified_designated' else None,(data.evidence_type+': '+data.evidence) if status=='verified_designated' else None,place_id))
+                    # A correction changes what the contributor filled in. Blank optional fields keep the
+                    # current value, and the current status (with its evidence) stays unless the moderator
+                    # sets one or the place stops being a designated kind or moves more than 50 m.
+                    keep_evidence=False
+                    if data.advisory_status: status=data.advisory_status
+                    elif row['advisory_status']=='verified_designated' and (sub['kind'] not in ('public_designated','venue_designated') or row['moved_m']>50): status='community_reported'
+                    else:
+                        status=row['advisory_status']; keep_evidence=status=='verified_designated'
+                    fresh=status=='verified_designated' and not keep_evidence
+                    conn.execute("""UPDATE places SET name=%(name)s,kind=%(kind)s,location=%(location)s::geometry,
+                        access_point=COALESCE(%(access_point)s::geometry,access_point),address_label=COALESCE(%(address_label)s::text,address_label),
+                        access_notes=COALESCE(%(access_notes)s::text,access_notes),inside_venue=COALESCE(%(inside_venue)s::boolean,inside_venue),
+                        advisory_status=%(status)s,
+                        verification_reviewed_at=CASE WHEN %(keep)s THEN verification_reviewed_at ELSE %(reviewed_at)s::timestamptz END,
+                        verification_public_source=CASE WHEN %(keep)s THEN verification_public_source ELSE %(public_source)s::text END,
+                        verification_evidence=CASE WHEN %(keep)s THEN verification_evidence ELSE %(evidence)s::text END,
+                        version=version+1,updated_at=now() WHERE id=%(id)s""",
+                        {'name':sub['name'],'kind':sub['kind'],'location':sub['location'],'access_point':sub['access_point'],'address_label':sub['address_label'],
+                         'access_notes':sub['access_notes'],'inside_venue':sub['inside_venue'],'status':status,'keep':keep_evidence,
+                         'reviewed_at':data.reviewed_at if fresh else None,'public_source':data.public_source if fresh else None,
+                         'evidence':(data.evidence_type+': '+data.evidence) if fresh else None,'id':place_id})
                 conn.execute("UPDATE place_submissions SET state='published',place_id=%s,decision_reason=%s,decided_at=now() WHERE id=%s",(place_id,data.reason,source_id))
             else: fail(422,'invalid_action','Action is not valid for a submission')
             new=snapshot(conn.execute('SELECT * FROM place_submissions WHERE id=%s',(source_id,)).fetchone())
@@ -463,7 +483,15 @@ def decide(case_id: str,data: DecisionIn,user=Depends(admin)):
                 old=snapshot(conn.execute('SELECT * FROM accounts WHERE id=%s',(target_id,)).fetchone()); old.pop('email',None)
                 conn.execute("UPDATE accounts SET email=id || '@deleted.invalid',password_hash='deleted',disabled_at=now() WHERE id=%s",(target_id,))
                 conn.execute("UPDATE deletion_requests SET state='completed' WHERE id=%s",(source_id,))
+                # Remove the person's own words. Published places stay because others rely on them.
+                removed={
+                    'reviews':conn.execute('UPDATE reviews SET body=NULL,deleted_at=COALESCE(deleted_at,now()),updated_at=now() WHERE account_id=%s',(target_id,)).rowcount,
+                    'submissions':conn.execute("UPDATE place_submissions SET basis='',address_label=NULL,access_notes=NULL WHERE account_id=%s",(target_id,)).rowcount,
+                    'confirmations':conn.execute('UPDATE confirmations SET access_note_suggestion=NULL WHERE account_id=%s',(target_id,)).rowcount,
+                    'reports':conn.execute('UPDATE reports SET detail=NULL WHERE account_id=%s',(target_id,)).rowcount,
+                }
                 new=snapshot(conn.execute('SELECT * FROM accounts WHERE id=%s',(target_id,)).fetchone())
+                new['content_removed']=removed
                 place_id=None; review_id=None
             else: fail(422,'invalid_case','Unsupported case source')
             if place_id:

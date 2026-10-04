@@ -173,9 +173,10 @@ function decisionForm(detail, actions) {
     label.append(input); grid.append(label); return input;
   };
   const status = add("advisory_status", "Advisory status", "select");
-  status.append(option("", "Select a status"));
+  const isCorrection = detail.case.source_type === "submission" && detail.source?.intent === "correct";
+  status.append(option("", isCorrection ? "Keep current status" : "Select a status"));
   for (const value of ["community_reported", "disputed", "prohibited", "closed", "verified_designated"]) status.append(option(value, value.replaceAll("_", " ")));
-  if (detail.case.source_type === "submission") status.value = "community_reported";
+  if (detail.case.source_type === "submission") status.value = isCorrection ? "" : "community_reported";
   const canonical = add("canonical_place_id", "Canonical place ID");
   const evidenceType = add("evidence_type", "Evidence type", "select");
   for (const value of ["signage", "venue_confirmation", "official_listing"]) evidenceType.append(option(value, value.replaceAll("_", " ")));
@@ -204,7 +205,7 @@ function decisionForm(detail, actions) {
     const visible = (name, yes) => { const label = grid.querySelector(`[data-for="${name}"]`); label.hidden = !yes; label.querySelector("input,select,textarea").required = yes && ["canonical_place_id", "evidence_type", "public_source", "evidence", "reviewed_at"].includes(name); };
     const statusNeeded = selected === "publish" || selected === "set_status";
     visible("advisory_status", statusNeeded);
-    status.required = statusNeeded;
+    status.required = statusNeeded && !(selected === "publish" && isCorrection);
     for (const name of ["canonical_place_id"]) visible(name, selected === "merge" || selected === "merge_place");
     const verify = selected === "verify_designated" || (selected === "publish" && status.value === "verified_designated");
     for (const name of ["evidence_type", "public_source", "evidence", "reviewed_at"]) visible(name, verify);
@@ -240,7 +241,7 @@ function buildDecision(data, detail) {
   const place = detail.context?.place;
   if (place && !["resolve", "hide_confirmation"].includes(action)) result.expected_version = place.version;
   if (action === "publish" && detail.source?.intent === "correct" && place) result.expected_version = place.version;
-  if (["publish", "set_status"].includes(action)) result.advisory_status = data.get("advisory_status");
+  if (["publish", "set_status"].includes(action) && data.get("advisory_status")) result.advisory_status = data.get("advisory_status");
   if (["merge", "merge_place"].includes(action)) result.canonical_place_id = String(data.get("canonical_place_id")).trim();
   if (action === "verify_designated" || (action === "publish" && result.advisory_status === "verified_designated")) {
     for (const key of ["evidence_type", "public_source", "evidence"]) result[key] = String(data.get(key)).trim();

@@ -549,3 +549,81 @@ def test_database_connections_are_reused_and_rolled_back(client):
             core.fail(409,'test','roll back')
     with core.db() as conn:
         assert conn.execute('SELECT 1 FROM rate_buckets WHERE bucket=%s',(marker,)).fetchone() is None
+
+
+def test_correction_keeps_untouched_fields_and_verification(client):
+    _,contributor=fixture_account()
+    _,admin_headers=fixture_account('admin')
+    now=datetime.now(timezone.utc).isoformat()
+    evidence={'evidence_type':'signage','evidence':'Photo of posted sign','public_source':'Posted venue sign','reviewed_at':now}
+
+    def verified_place(lat):
+        place_id=fixture_place(lat=lat)
+        _,verified=decide_place(client,admin_headers,place_id,'verify_designated',1,**evidence)
+        assert verified.status_code==201,verified.text
+        return place_id
+
+    def publish_correction(place_id,lat,kind='public_designated',**decision):
+        submitted=client.post('/v1/place-submissions',headers={**contributor,'Idempotency-Key':'fix-'+place_id},
+                              json={'intent':'correct','place_id':place_id,'name':'Renamed pin','kind':kind,
+                                    'location':{'lat':lat,'lon':121.0},'basis':'Name on the sign changed'})
+        assert submitted.status_code==201,submitted.text
+        cases=client.get('/v1/admin/moderation-cases',params={'limit':100},headers=admin_headers).json()['items']
+        case=next(x for x in cases if x['source_id']==submitted.json()['id'])
+        published=client.post(f"/v1/admin/moderation-cases/{case['id']}/decisions",headers=admin_headers,
+                              json={'action':'publish','reason':'Correction checked','expected_version':2,**decision})
+        assert published.status_code==201,published.text
+        return client.get(f'/v1/places/{place_id}').json()
+
+    small=verified_place(14.71)
+    detail=publish_correction(small,14.7101)
+    assert detail['name']=='Renamed pin'
+    assert detail['advisory_status']=='verified_designated'
+    assert detail['verification']['public_source']=='Posted venue sign'
+    assert detail['access_notes']=='Old entrance' and detail['access_point'] is not None
+
+    moved=verified_place(14.72)
+    detail=publish_correction(moved,14.7210)
+    assert detail['advisory_status']=='community_reported' and detail['verification'] is None
+
+    informal=verified_place(14.73)
+    detail=publish_correction(informal,14.73,kind='informal_outdoor')
+    assert detail['advisory_status']=='community_reported' and detail['verification'] is None
+
+    disputed=verified_place(14.74)
+    detail=publish_correction(disputed,14.74,advisory_status='disputed')
+    assert detail['advisory_status']=='disputed' and detail['verification'] is None
+
+
+def test_approved_deletion_removes_the_persons_words(client):
+    account_id,person=fixture_account()
+    _,admin_headers=fixture_account('admin')
+    place_id=fixture_place(lat=14.75)
+    review=client.put(f'/v1/places/{place_id}/reviews/me',headers=person,json={'stars':1,'body':'Mentions my name'})
+    assert review.status_code==200,review.text
+    observed=client.post(f'/v1/places/{place_id}/confirmations',headers={**person,'Idempotency-Key':'words-'+place_id},
+                         json={'observation':'changed','observed_at':datetime.now(timezone.utc).isoformat(),'access_note_suggestion':'Ask for me at the door'})
+    assert observed.status_code==201,observed.text
+    reported=client.post('/v1/reports',headers={**person,'Idempotency-Key':'words-report-'+place_id},
+                         json={'target_type':'place','target_id':place_id,'reason':'other','detail':'Call me on my number'})
+    assert reported.status_code==201,reported.text
+    proposed=client.post('/v1/place-submissions',headers={**person,'Idempotency-Key':'words-sub-'+place_id},
+                         json={'intent':'create','name':'My corner','kind':'informal_outdoor','location':{'lat':14.76,'lon':121.0},
+                               'access_notes':'Behind my house','basis':'I live next door to it'})
+    assert proposed.status_code==201,proposed.text
+    assert client.get(f'/v1/places/{place_id}').json()['rating']['count']==1
+    deletion=client.post('/v1/me/deletion-requests',headers=person).json()
+    cases=client.get('/v1/admin/moderation-cases',params={'limit':100},headers=admin_headers).json()['items']
+    case=next(x for x in cases if x['source_id']==deletion['id'])
+    approved=client.post(f"/v1/admin/moderation-cases/{case['id']}/decisions",headers=admin_headers,
+                         json={'action':'approve_deletion','reason':'User requested deletion'})
+    assert approved.status_code==201,approved.text
+    assert client.get(f'/v1/places/{place_id}').json()['rating']=={'average':None,'count':0}
+    assert client.get(f'/v1/places/{place_id}/reviews').json()['items']==[]
+    with psycopg.connect(TEST_DB) as conn:
+        assert conn.execute('SELECT body FROM reviews WHERE account_id=%s',(account_id,)).fetchone()[0] is None
+        assert conn.execute('SELECT access_note_suggestion FROM confirmations WHERE account_id=%s',(account_id,)).fetchone()[0] is None
+        assert conn.execute('SELECT detail FROM reports WHERE account_id=%s',(account_id,)).fetchone()[0] is None
+        assert conn.execute('SELECT basis,access_notes FROM place_submissions WHERE account_id=%s',(account_id,)).fetchone()==('',None)
+        decision=conn.execute('SELECT new_state FROM moderation_decisions WHERE case_id=%s',(case['id'],)).fetchone()[0]
+        assert decision['content_removed']=={'reviews':1,'submissions':1,'confirmations':1,'reports':1}
