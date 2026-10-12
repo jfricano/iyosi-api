@@ -1,6 +1,6 @@
 # Coding agent instructions
 
-Practical delivery policy v3.1.1. Read SOFTWARE_OPERATING_GUIDE.md and PR_WORKFLOW.md when needed; AGENTS.md and CLAUDE.md must stay identical. Report unavailable policy instead of claiming it was checked.
+Practical delivery policy v3.1.4. Read SOFTWARE_OPERATING_GUIDE.md and PR_WORKFLOW.md when needed; AGENTS.md and CLAUDE.md must stay identical. Report unavailable policy instead of claiming it was checked.
 
 ## Commands
 
@@ -31,3 +31,6 @@ Read the project README, existing working record and approved brief/decisions wh
 
 ## Project-specific
 Existing project-specific requirements, commands and recorded permissions remain in the project documentation.
+
+- Begin with the person using the result: their goal, context, constraints and attention. Use clear language without blame, accessible interactions, honest status and practical recovery. Keep consequential choices visible; teammates and maintainers are users too. Meet clients and ideas with curiosity and respect for their intended experience, including playful or unconventional entertainment. Apply technical rigor to approved goals and actual constraints without imposing personal taste or adding a judgment phase.
+- Make touched code pleasant to read: use a single blank line between distinct logical steps or phases where it helps scanning, keep closely related statements together, and follow established language conventions between declarations/functions. Respect existing formatters, linting and language idioms. Avoid per-statement padding, decorative separators or arbitrary spacing that obscures flow. Exclude generated/minified code; improve touched code incrementally with focused diffs, without behavior changes or broad formatting churn solely for this preference.
