@@ -8,3 +8,6 @@ __pycache__/
 .venv/
 .idea/
 .vscode/
+
+# Local Claude Code settings and state.
+/.claude/
