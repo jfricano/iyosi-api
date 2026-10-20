@@ -8,3 +8,6 @@ __pycache__/
 .venv/
 .idea/
 .vscode/
+
+# Personal agent overrides stay local.
+CLAUDE.local.md
