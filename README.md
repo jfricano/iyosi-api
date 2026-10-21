@@ -65,4 +65,4 @@ Set `TEST_DATABASE_URL` to an empty dedicated database whose name ends in `_test
 
 The API, iOS app, and Android app are organized as three independent project roots intended for separate Git repositories. The API contract in [docs/openapi.json](docs/openapi.json) is shared by the clients; they do not share source code or a Git history. For local development, clone the repositories as sibling `api/`, `ios/`, and `android/` folders inside an `iYosi/` workspace folder.
 
-Copyright © 2026 Orca Solutions. All rights reserved. The original project code and documentation are [proprietary](LICENSE.md), even when this repository is publicly visible. The committed boundary data has [separate attribution and license terms](THIRD_PARTY_NOTICES.md).
+The original project code and documentation are released under the [MIT License](LICENSE). Copyright © 2026 Jason Fricano. The committed boundary data has [separate attribution and license terms](THIRD_PARTY_NOTICES.md).
